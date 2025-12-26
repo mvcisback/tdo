@@ -130,7 +130,7 @@ def test_list_command_outputs_tasks() -> None:
     assert result.exit_code == 0
     lines = [line for line in result.stdout.strip().splitlines() if line]
     assert lines[0].startswith("ID")
-    assert lines[1].startswith("-")
+    assert lines[1].startswith("─")
     data_line = lines[2]
     assert data_line.split()[0] == "1"
     assert "List task" in data_line

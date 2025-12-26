@@ -165,7 +165,17 @@ SUMMARY_WIDTH = 45
 
 ROW_COLORS = ["", "\033[48;5;250m\033[38;5;0m"]
 ANSI_RESET = "\033[0m"
-
+COLUMN_BORDER = "│"
+COLUMN_ORDER = ["id", "age", "project", "tag", "due", "description", "urg"]
+COLUMN_LABELS = {
+    "id": "ID",
+    "age": "Age",
+    "project": "Project",
+    "tag": "Tag",
+    "due": "Due",
+    "description": "Description",
+    "urg": "Urg",
+}
 COLUMN_WIDTHS = {
     "id": 3,
     "age": 4,
@@ -174,6 +184,15 @@ COLUMN_WIDTHS = {
     "due": 10,
     "description": 45,
     "urg": 4,
+}
+COLUMN_COLORS = {
+    "id": "\033[38;5;27m",
+    "age": "\033[38;5;51m",
+    "project": "\033[38;5;147m",
+    "tag": "\033[38;5;178m",
+    "due": "\033[38;5;220m",
+    "description": "\033[38;5;39m",
+    "urg": "\033[38;5;208m",
 }
 
 
@@ -201,22 +220,32 @@ def _pad(value: str, width: int, align: str = "left") -> str:
     return value.ljust(width)
 
 
+def _format_cell(column: str, value: str, align: str = "left", colorize: bool = True) -> str:
+    padded = _pad(value, COLUMN_WIDTHS[column], align=align)
+    if not colorize:
+        return padded
+    color = COLUMN_COLORS.get(column, "")
+    if color:
+        return f"{color}{padded}{ANSI_RESET}"
+    return padded
+
+
 def _header_row() -> str:
-    parts = [
-        _pad("ID", COLUMN_WIDTHS["id"], align="right"),
-        _pad("Age", COLUMN_WIDTHS["age"], align="right"),
-        _pad("Project", COLUMN_WIDTHS["project"]),
-        _pad("Tag", COLUMN_WIDTHS["tag"]),
-        _pad("Due", COLUMN_WIDTHS["due"]),
-        _pad("Description", COLUMN_WIDTHS["description"]),
-        _pad("Urg", COLUMN_WIDTHS["urg"], align="right"),
+    cells = [
+        _format_cell(
+            column,
+            COLUMN_LABELS[column],
+            align="right" if column in {"id", "age", "urg"} else "left",
+            colorize=False,
+        )
+        for column in COLUMN_ORDER
     ]
-    return " ".join(parts)
+    return f" {COLUMN_BORDER} ".join(cells)
 
 
 def _row_separator() -> str:
-    total = sum(COLUMN_WIDTHS.values()) + 6
-    return "-" * total
+    total_width = sum(COLUMN_WIDTHS[column] for column in COLUMN_ORDER) + 3 * (len(COLUMN_ORDER) - 1)
+    return "─" * total_width
 
 
 def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
@@ -232,16 +261,16 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
         summary = task.summary or ""
         trimmed_summary = summary[: COLUMN_WIDTHS["description"] - 3] + "..." if len(summary) > COLUMN_WIDTHS["description"] else summary
         priority_label = str(task.priority) if task.priority is not None else "-"
-        parts = [
-            _pad(str(index), COLUMN_WIDTHS["id"], align="right"),
-            _pad(due_label, COLUMN_WIDTHS["age"], align="right"),
-            _pad(project, COLUMN_WIDTHS["project"]),
-            _pad(tag, COLUMN_WIDTHS["tag"]),
-            _pad(due_date, COLUMN_WIDTHS["due"]),
-            _pad(trimmed_summary, COLUMN_WIDTHS["description"]),
-            _pad(priority_label, COLUMN_WIDTHS["urg"], align="right"),
+        cells = [
+            _format_cell("id", str(index), align="right"),
+            _format_cell("age", due_label, align="right"),
+            _format_cell("project", project),
+            _format_cell("tag", tag),
+            _format_cell("due", due_date),
+            _format_cell("description", trimmed_summary),
+            _format_cell("urg", priority_label, align="right"),
         ]
-        row = " ".join(parts)
+        row = f" {COLUMN_BORDER} ".join(cells)
         if show_uids:
             row = f"{row} {task.uid}"
         color = ROW_COLORS[(index - 1) % len(ROW_COLORS)]
