@@ -1,29 +1,38 @@
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Sequence, TypeVar
+from pathlib import Path
+from typing import Callable, Sequence, TypeVar
 
 import typer
 
 from .caldav_client import CalDAVClient
-from .config import load_config
+from .config import CaldavConfig, config_file_path, load_config, write_config_file
 from .models import TaskPatch, TaskPayload
 
 
 T = TypeVar("T")
 app = typer.Typer()
+config_app = typer.Typer(help="Manage CalDAV configuration.")
+app.add_typer(config_app, name="config")
 _CLIENT_FACTORY: type[CalDAVClient] = CalDAVClient
 
 
-def _run_with_client(env: str | None, callback: Callable[[CalDAVClient], Awaitable[T]]) -> T:
+def _run_with_client(env: str | None, callback: Callable[[CalDAVClient], T]) -> T:
     config = load_config(env)
+    with _CLIENT_FACTORY(config) as client:
+        return callback(client)
 
-    async def runner() -> T:
-        async with _CLIENT_FACTORY(config) as client:
-            return await callback(client)
 
-    return asyncio.run(runner())
+def _require_value(value: str | None, prompt_text: str) -> str:
+    candidate = (value or "").strip()
+    if candidate:
+        return candidate
+    response = typer.prompt(prompt_text).strip()
+    if not response:
+        typer.echo(f"{prompt_text} is required")
+        raise typer.Exit(code=1)
+    return response
 
 
 def _parse_priority(raw: str) -> int | None:
@@ -96,15 +105,12 @@ def _parse_patch(tokens: Sequence[str]) -> TaskPatch:
     return TaskPatch(summary=summary, priority=priority, due=due, x_properties=x_properties)
 
 
-def _delete_many(client: CalDAVClient, targets: list[str]) -> Awaitable[list[str]]:
-    async def runner() -> list[str]:
-        deleted: list[str] = []
-        for uid in targets:
-            await client.delete_task(uid)
-            deleted.append(uid)
-        return deleted
-
-    return runner()
+def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
+    deleted: list[str] = []
+    for uid in targets:
+        client.delete_task(uid)
+        deleted.append(uid)
+    return deleted
 
 
 @app.command()
@@ -154,3 +160,36 @@ def list_tasks(env: str | None = typer.Option(None, "--env", help="env name")) -
     for task in tasks:
         due = task.due.isoformat() if task.due else "-"
         typer.echo(f"{task.uid}\t{due}\t{task.summary}")
+
+
+@config_app.command(name="init")
+def init_config(
+    env: str | None = typer.Option(None, "--env", help="environment name"),
+    config_home: Path | None = typer.Option(
+        None,
+        "--config-home",
+        help="override the config directory",
+    ),
+    calendar_url: str | None = typer.Option(None, "--calendar-url", help="CalDAV calendar URL"),
+    username: str | None = typer.Option(None, "--username", help="CalDAV username"),
+    password: str | None = typer.Option(None, "--password", help="CalDAV password"),
+    token: str | None = typer.Option(None, "--token", help="CalDAV token"),
+    force: bool = typer.Option(False, "--force", "-f", help="overwrite existing config"),
+) -> None:
+    target = config_file_path(env, config_home)
+    calendar_url_value = _require_value(calendar_url, "CalDAV calendar URL")
+    username_value = _require_value(username, "CalDAV username")
+    password_value = password if password else None
+    token_value = token if token else None
+    config = CaldavConfig(
+        calendar_url=calendar_url_value,
+        username=username_value,
+        password=password_value,
+        token=token_value,
+    )
+    try:
+        path = write_config_file(target, config, force=force)
+    except FileExistsError:
+        typer.echo(f"{target} already exists; use --force to overwrite")
+        raise typer.Exit(code=1)
+    typer.echo(f"created config file at {path}")

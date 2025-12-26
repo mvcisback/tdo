@@ -32,13 +32,18 @@ def test_format_due_serializes_to_utc_timestamp() -> None:
     assert client._format_due(due) == "20250601T000000Z"
 
 
-def test_resource_url_without_duplicate_slashes() -> None:
+def test_task_from_data_parses_fields() -> None:
     client = CalDAVClient(CALENDAR_CONFIG)
-    assert client._resource_url("task-abc") == "https://example.com/calendars/main/task-abc.ics"
-
-
-def test_trade_report_contains_calendar_query() -> None:
-    client = CalDAVClient(CALENDAR_CONFIG)
-    report = client._trade_report()
-    assert "c:calendar-query" in report
-    assert "getetag" in report
+    body = client._build_ics(
+        "Review",
+        datetime(2025, 2, 3, 4, 5, 6),
+        4,
+        {"X-ORG": "dev"},
+        "task-100",
+    )
+    task = client._task_from_data(body)
+    assert task.uid == "task-100"
+    assert task.summary == "Review"
+    assert task.priority == 4
+    assert task.x_properties.get("X-ORG") == "dev"
+    assert task.due == datetime(2025, 2, 3, 4, 5, 6)

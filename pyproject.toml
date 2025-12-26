@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "httpx>=0.28.1",
+    "caldav>=2.2.3",
     "typer>=0.21.0",
 ]
 

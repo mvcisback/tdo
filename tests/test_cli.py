@@ -27,13 +27,13 @@ class DummyClient:
         cls.last_patch = None
         cls.deleted = []
 
-    async def __aenter__(self) -> DummyClient:
+    def __enter__(self) -> DummyClient:
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
         return None
 
-    async def create_task(self, payload: TaskPayload) -> Task:
+    def create_task(self, payload: TaskPayload) -> Task:
         DummyClient.last_payload = payload
         return Task(
             uid="dummy-task",
@@ -43,7 +43,7 @@ class DummyClient:
             x_properties=payload.x_properties,
         )
 
-    async def modify_task(self, uid: str, patch: TaskPatch) -> Task:
+    def modify_task(self, uid: str, patch: TaskPatch) -> Task:
         DummyClient.last_patch = patch
         return Task(
             uid=uid,
@@ -53,11 +53,11 @@ class DummyClient:
             x_properties=patch.x_properties,
         )
 
-    async def delete_task(self, uid: str) -> str:
+    def delete_task(self, uid: str) -> str:
         DummyClient.deleted.append(uid)
         return uid
 
-    async def list_tasks(self) -> list[Task]:
+    def list_tasks(self) -> list[Task]:
         return [
             Task(
                 uid="list-task",
@@ -110,3 +110,34 @@ def test_list_command_outputs_tasks() -> None:
     result = runner.invoke(cli.app, ["list"])
     assert result.exit_code == 0
     assert "list-task" in result.stdout
+
+
+def test_config_init_command_writes_file(tmp_path) -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "config",
+            "init",
+            "--env",
+            "test",
+            "--config-home",
+            str(tmp_path),
+            "--calendar-url",
+            "https://example.com/declare",
+            "--username",
+            "tester",
+            "--password",
+            "secret",
+            "--token",
+            "tok",
+            "--force",
+        ],
+    )
+    assert result.exit_code == 0
+    target = tmp_path / "config.test.toml"
+    assert target.exists()
+    contents = target.read_text()
+    assert "calendar_url = \"https://example.com/declare\"" in contents
+    assert "username = \"tester\"" in contents
+    assert "password = \"secret\"" in contents
+    assert "token = \"tok\"" in contents

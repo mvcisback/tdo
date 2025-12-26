@@ -1,84 +1,73 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict
 from uuid import uuid4
 
-import httpx
+from caldav import DAVClient, Calendar
 
 from .config import CaldavConfig
 from .models import Task, TaskPatch, TaskPayload
 
 
+@dataclass
 class CalDAVClient:
-    def __init__(self, config: CaldavConfig):
-        self._config = config
-        self._client: httpx.AsyncClient | None = None
+    config: CaldavConfig
+    client: DAVClient | None = field(default=None, init=False)
+    calendar: Calendar | None = field(default=None, init=False)
 
-    async def __aenter__(self) -> CalDAVClient:
-        headers = {"User-Agent": "todo-cli/0.1.0"}
-        if self._config.token:
-            headers["Authorization"] = f"Bearer {self._config.token}"
-        auth = None
-        if self._config.password:
-            auth = httpx.BasicAuth(self._config.username, self._config.password)
-        self._client = httpx.AsyncClient(auth=auth, headers=headers, timeout=10.0)
+    def __enter__(self) -> CalDAVClient:
+        self.client = DAVClient(
+            url=self.config.calendar_url,
+            username=self.config.username,
+            password=self.config.password,
+        )
+        if self.config.token and self.client.session:
+            self.client.session.headers["Authorization"] = f"Bearer {self.config.token}"
+        self.calendar = self.client.calendar(url=self.config.calendar_url)
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
-        if self._client:
-            await self._client.aclose()
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if self.client and self.client.session:
+            self.client.session.close()
+        self.client = None
+        self.calendar = None
 
-    async def list_tasks(self) -> list[Task]:
-        assert self._client
-        payload = self._trade_report()
-        response = await self._client.request(
-            "REPORT",
-            self._config.calendar_url,
-            headers={"Depth": "1", "Content-Type": "application/xml"},
-            content=payload,
-        )
-        response.raise_for_status()
-        return []
+    def list_tasks(self) -> list[Task]:
+        calendar = self._ensure_calendar()
+        return [self._task_from_data(todo.data) for todo in calendar.todos()]
 
-    async def create_task(self, payload: TaskPayload) -> Task:
-        assert self._client
+    def create_task(self, payload: TaskPayload) -> Task:
+        calendar = self._ensure_calendar()
         uid = self._uid_from_summary(payload.summary)
-        destination = self._resource_url(uid)
         body = self._build_ics(payload.summary, payload.due, payload.priority, payload.x_properties, uid)
-        response = await self._client.put(
-            destination,
-            headers={"Content-Type": "text/calendar"},
-            content=body,
-        )
-        response.raise_for_status()
-        return Task(uid=uid, summary=payload.summary, due=payload.due, priority=payload.priority, x_properties=payload.x_properties)
+        todo = calendar.add_todo(body)
+        return self._task_from_data(todo.data)
 
-    async def modify_task(self, uid: str, patch: TaskPatch) -> Task:
-        assert self._client
-        destination = self._resource_url(uid)
-        summary = patch.summary or uid
+    def modify_task(self, uid: str, patch: TaskPatch) -> Task:
+        calendar = self._ensure_calendar()
+        todo = calendar.todo_by_uid(uid)
+        if todo is None:
+            raise KeyError(f"todo {uid} not found")
+        summary = patch.summary or self._extract_summary(todo.data) or uid
         body = self._build_ics(summary, patch.due, patch.priority, patch.x_properties, uid)
-        response = await self._client.put(
-            destination,
-            headers={"Content-Type": "text/calendar"},
-            content=body,
-        )
-        response.raise_for_status()
+        todo.data = body
+        todo.save()
         return Task(uid=uid, summary=summary, due=patch.due, priority=patch.priority, x_properties=patch.x_properties)
 
-    async def delete_task(self, uid: str) -> str:
-        assert self._client
-        response = await self._client.delete(self._resource_url(uid))
-        response.raise_for_status()
+    def delete_task(self, uid: str) -> str:
+        calendar = self._ensure_calendar()
+        todo = calendar.todo_by_uid(uid)
+        if todo is None:
+            raise KeyError(f"todo {uid} not found")
+        todo.delete()
         return uid
 
-    def _resource_url(self, uid: str) -> str:
-        base = self._config.calendar_url.rstrip("/")
-        return f"{base}/{uid}.ics"
-
-    def _uid_from_summary(self, summary: str) -> str:
-        return f"{summary.replace(' ', '_')}-{uuid4()}"
+    def _ensure_calendar(self) -> Calendar:
+        if not self._calendar:
+            raise RuntimeError("caldav client is not initialized")
+        return self._calendar
 
     def _build_ics(
         self,
@@ -108,10 +97,45 @@ class CalDAVClient:
     def _format_due(self, value: datetime) -> str:
         return value.strftime("%Y%m%dT%H%M%SZ")
 
-    def _trade_report(self) -> str:
-        return (
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-            "<c:calendar-query xmlns:c=\"urn:ietf:params:xml:ns:caldav\">"
-            "<c:prop><d:getetag xmlns:d=\"DAV:\"/></c:prop>"
-            "</c:calendar-query>"
-        )
+    def _task_from_data(self, data: str) -> Task:
+        summary = ""
+        due = None
+        priority = None
+        x_properties: Dict[str, str] = {}
+        uid = ""
+        for raw in data.splitlines():
+            line = raw.strip()
+            if not line or ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            if key == "SUMMARY":
+                summary = value
+            elif key == "UID":
+                uid = value
+            elif key == "DUE":
+                due = self._parse_due(value)
+            elif key == "PRIORITY":
+                try:
+                    priority = int(value)
+                except ValueError:
+                    pass
+            elif key.startswith("X-"):
+                x_properties[key] = value
+        return Task(uid=uid, summary=summary, due=due, priority=priority, x_properties=x_properties)
+
+    def _parse_due(self, raw: str) -> datetime | None:
+        try:
+            if raw.endswith("Z"):
+                return datetime.strptime(raw, "%Y%m%dT%H%M%SZ")
+            return datetime.strptime(raw, "%Y%m%dT%H%M%S")
+        except ValueError:
+            return None
+
+    def _extract_summary(self, data: str) -> str | None:
+        for raw in data.splitlines():
+            if raw.strip().startswith("SUMMARY:"):
+                return raw.split(":", 1)[1]
+        return None
+
+    def _uid_from_summary(self, summary: str) -> str:
+        return f"{summary.replace(' ', '_')}-{uuid4()}"
