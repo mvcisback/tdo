@@ -20,7 +20,7 @@ An async Python-cli inspired by Taskwarrior that stores tasks on CalDAV servers 
 
 `todo config init` prompts for the CalDAV calendar URL and username, then stores them under `~/.config/todo/config.<env>.toml` (defaults to `default`).
 
-Pass `--env <name>` to target a different environment (e.g. `default`, `personal`, `work`), `--config-home` to redirect the base directory, and `--force` to overwrite an existing file. Additional options such as `--password`, `--token`, and `--calendar-url` / `--username` can be used to skip the interactive prompts when automating the setup.
+Pass `--env <name>` to target a different environment (e.g. `default`, `personal`, `work`), `--config-home` to redirect the base directory, and `--force` to overwrite an existing file. Additional options such as `--password`, `--token`, and `--calendar-url` / `--username` can be used to skip the interactive prompts when automating the setup. You can also skip `todo config init` entirely by passing `--config-file <path>` to the other commands so they load the given TOML directly.
 
 Sample configs live in `examples/configs/` to show how to write valid `[caldav]` sections for each environment.
 

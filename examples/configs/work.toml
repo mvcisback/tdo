@@ -1,4 +1,0 @@
-[caldav]
-calendar_url = "https://team-calendar.example.com/calendars/work/primary"
-username = "team-user"
-token = "example-token"

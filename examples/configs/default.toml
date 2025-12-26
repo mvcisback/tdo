@@ -1,5 +1,0 @@
-[caldav]
-calendar_url = "https://caldav.example.com/calendars/user/default"
-username = "user@example.com"
-password = "hunter2"
-token = ""

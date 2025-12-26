@@ -86,6 +86,17 @@ def load_config(env: str | None = None, config_home: Path | None = None) -> Cald
     if path.exists():
         file_values = _load_file_values(path)
         values.update(file_values)
+    return _build_config(values)
+
+
+def load_config_from_path(path: Path) -> CaldavConfig:
+    if not path.exists():
+        raise FileNotFoundError(f"config file not found: {path}")
+    values = _load_file_values(path)
+    return _build_config(values)
+
+
+def _build_config(values: dict[str, str | None]) -> CaldavConfig:
     url = values.get("calendar_url")
     username = values.get("username")
     password = values.get("password")

@@ -25,7 +25,18 @@ class CalDAVClient:
         )
         if self.config.token and self.client.session:
             self.client.session.headers["Authorization"] = f"Bearer {self.config.token}"
-        self.calendar = self.client.calendar(url=self.config.calendar_url)
+        calendar = None
+        try:
+            calendar = self.client.calendar(url=self.config.calendar_url)
+        except Exception:
+            pass
+        if not calendar:
+            principal = self.client.principal()
+            calendars = principal.calendars()
+            if not calendars:
+                raise RuntimeError("no calendars found for the configured user")
+            calendar = calendars[0]
+        self.calendar = calendar
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -65,9 +76,9 @@ class CalDAVClient:
         return uid
 
     def _ensure_calendar(self) -> Calendar:
-        if not self._calendar:
+        if self.calendar is None:
             raise RuntimeError("caldav client is not initialized")
-        return self._calendar
+        return self.calendar
 
     def _build_ics(
         self,

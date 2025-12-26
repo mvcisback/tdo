@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -80,6 +81,14 @@ def stub_cal_dav(monkeypatch: pytest.MonkeyPatch) -> None:
             username="tester",
         ),
     )
+    monkeypatch.setattr(
+        cli,
+        "load_config_from_path",
+        lambda path: CaldavConfig(
+            calendar_url="https://example.com/cal",
+            username="tester",
+        ),
+    )
 
 
 def test_add_command_parses_tokens() -> None:
@@ -110,6 +119,23 @@ def test_list_command_outputs_tasks() -> None:
     result = runner.invoke(cli.app, ["list"])
     assert result.exit_code == 0
     assert "list-task" in result.stdout
+
+
+def test_list_command_accepts_config_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "config.radicale-test.toml"
+    config_path.write_text(
+        "[caldav]\ncalendar_url = \"https://example.com/cal\"\nusername = \"tester\"\n"
+    )
+    called: list[Path] = []
+
+    def fake_load(path: Path) -> CaldavConfig:
+        called.append(path)
+        return CaldavConfig(calendar_url="https://example.com/cal", username="tester")
+
+    monkeypatch.setattr(cli, "load_config_from_path", fake_load)
+    result = runner.invoke(cli.app, ["list", "--config-file", str(config_path)])
+    assert result.exit_code == 0
+    assert called == [config_path]
 
 
 def test_config_init_command_writes_file(tmp_path) -> None:

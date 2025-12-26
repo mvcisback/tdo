@@ -7,7 +7,7 @@ from typing import Callable, Sequence, TypeVar
 import typer
 
 from .caldav_client import CalDAVClient
-from .config import CaldavConfig, config_file_path, load_config, write_config_file
+from .config import CaldavConfig, config_file_path, load_config, load_config_from_path, write_config_file
 from .models import TaskPatch, TaskPayload
 
 
@@ -18,10 +18,16 @@ app.add_typer(config_app, name="config")
 _CLIENT_FACTORY: type[CalDAVClient] = CalDAVClient
 
 
-def _run_with_client(env: str | None, callback: Callable[[CalDAVClient], T]) -> T:
-    config = load_config(env)
+def _run_with_client(env: str | None, config_file: Path | None, callback: Callable[[CalDAVClient], T]) -> T:
+    config = _resolve_config(env, config_file)
     with _CLIENT_FACTORY(config) as client:
         return callback(client)
+
+
+def _resolve_config(env: str | None, config_file: Path | None) -> CaldavConfig:
+    if config_file:
+        return load_config_from_path(config_file)
+    return load_config(env)
 
 
 def _require_value(value: str | None, prompt_text: str) -> str:
@@ -117,10 +123,20 @@ def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
 def add(
     description: str,
     env: str | None = typer.Option(None, "--env", help="env name"),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config-file",
+        exists=True,
+        dir_okay=False,
+        file_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path to an existing CalDAV config TOML.",
+    ),
     tokens: list[str] | None = typer.Argument(None),
 ):
     payload = _parse_payload(description, tokens or ())
-    created = _run_with_client(env, lambda client: client.create_task(payload))
+    created = _run_with_client(env, config_file, lambda client: client.create_task(payload))
     typer.echo(created.uid)
 
 
@@ -128,13 +144,23 @@ def add(
 def modify(
     uid: str,
     env: str | None = typer.Option(None, "--env", help="env name"),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config-file",
+        exists=True,
+        dir_okay=False,
+        file_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path to an existing CalDAV config TOML.",
+    ),
     tokens: list[str] | None = typer.Argument(None),
 ):
     patch = _parse_patch(tokens or ())
     if not patch.has_changes():
         typer.echo("no changes provided")
         raise typer.Exit(code=1)
-    updated = _run_with_client(env, lambda client: client.modify_task(uid, patch))
+    updated = _run_with_client(env, config_file, lambda client: client.modify_task(uid, patch))
     typer.echo(updated.uid)
 
 
@@ -142,18 +168,40 @@ def modify(
 def delete(
     uids: str,
     env: str | None = typer.Option(None, "--env", help="env name"),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config-file",
+        exists=True,
+        dir_okay=False,
+        file_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path to an existing CalDAV config TOML.",
+    ),
 ):
     targets = [token.strip() for token in uids.split(",") if token.strip()]
     if not targets:
         typer.echo("no targets provided")
         raise typer.Exit(code=1)
-    deleted = _run_with_client(env, lambda client: _delete_many(client, targets))
+    deleted = _run_with_client(env, config_file, lambda client: _delete_many(client, targets))
     typer.echo(f"deleted {len(deleted)} tasks")
 
 
 @app.command(name="list")
-def list_tasks(env: str | None = typer.Option(None, "--env", help="env name")) -> None:
-    tasks = _run_with_client(env, lambda client: client.list_tasks())
+def list_tasks(
+    env: str | None = typer.Option(None, "--env", help="env name"),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config-file",
+        exists=True,
+        dir_okay=False,
+        file_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path to an existing CalDAV config TOML.",
+    ),
+) -> None:
+    tasks = _run_with_client(env, config_file, lambda client: client.list_tasks())
     if not tasks:
         typer.echo("no tasks found")
         return

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from todo.caldav_client import CalDAVClient
 from todo.config import CaldavConfig
 
@@ -47,3 +49,16 @@ def test_task_from_data_parses_fields() -> None:
     assert task.priority == 4
     assert task.x_properties.get("X-ORG") == "dev"
     assert task.due == datetime(2025, 2, 3, 4, 5, 6)
+
+
+def test_ensure_calendar_raises_when_not_initialized() -> None:
+    client = CalDAVClient(CALENDAR_CONFIG)
+    with pytest.raises(RuntimeError):
+        client._ensure_calendar()
+
+
+def test_ensure_calendar_returns_calendar_when_initialized() -> None:
+    client = CalDAVClient(CALENDAR_CONFIG)
+    sentinel = object()
+    client.calendar = sentinel
+    assert client._ensure_calendar() is sentinel
