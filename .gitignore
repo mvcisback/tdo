@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Temporary Radicale storage
+"$storage"/

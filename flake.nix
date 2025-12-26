@@ -45,6 +45,32 @@
           ]
         );
         venv = pythonSet.mkVirtualEnv "todo-venv" workspace.deps.default;
+        testHash = "$2b$12$.R3ZiywXe5tgoRagYudVL.hAEGyg4H40Gv0tpSLxNN4MFobFQp3Zy";
+        radicaleTest = pkgs.writeScriptBin "radicale-test" ''
+#!${pkgs.bash}/bin/bash
+set -euo pipefail
+storage=$(mktemp -d /tmp/radicale-test-XXXXXX)
+trap 'rm -rf "$storage"' EXIT
+config=$(mktemp /tmp/radicale-test-config-XXXXXX)
+cat <<'EOF' > "$config"
+[server]
+hosts = 0.0.0.0:5232
+
+[auth]
+type = htpasswd
+htpasswd_filename = ${pkgs.writeText "users" "test:${testHash}\n"}
+htpasswd_encryption = bcrypt
+
+[rights]
+type = authenticated
+
+[storage]
+type = multifilesystem
+filesystem_folder = "$storage"
+EOF
+export RADICALE_CONFIG="$config"
+exec ${pkgs.radicale}/bin/radicale
+        '';
         todoApp = pkgs.writeShellScriptBin "todo" ''
           cd ${workspaceRoot}
           export PYTHONPATH=${workspaceRoot}
@@ -62,9 +88,14 @@
           '';
         };
         packages.todo = todoApp;
+        packages.radicaleTest = radicaleTest;
         apps.default = {
           type = "app";
           program = "${todoApp}/bin/todo";
+        };
+        apps.radicaleTest = {
+          type = "app";
+          program = "${radicaleTest}/bin/radicale-test";
         };
       });
 }

@@ -24,6 +24,10 @@ Pass `--env <name>` to target a different environment (e.g. `default`, `personal
 
 Sample configs live in `examples/configs/` to show how to write valid `[caldav]` sections for each environment.
 
+### Radicale test server
+
+Launch a disposable CalDAV backend via `nix run .#radicaleTest`; it binds to port `5232` and exposes a single user `test` with password `test`. The server is backed by the embedded Radicale config and resets every time the script exits.
+
 ## Command Syntax
 
 | Command | Description |
