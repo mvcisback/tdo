@@ -12,7 +12,7 @@ from rich.table import Table
 
 from .caldav_client import CalDAVClient
 from .config import CaldavConfig, config_file_path, load_config, load_config_from_path, write_config_file
-from .models import TaskPatch, TaskPayload
+from .models import Task, TaskPatch, TaskPayload
 
 
 T = TypeVar("T")
@@ -76,9 +76,10 @@ def _parse_due(raw: str) -> datetime | None:
         return None
 
 
-def _parse_tokens(tokens: Sequence[str]) -> tuple[int | None, datetime | None, dict[str, str]]:
+def _parse_tokens(tokens: Sequence[str]) -> tuple[int | None, datetime | None, str | None, dict[str, str]]:
     priority: int | None = None
     due: datetime | None = None
+    status: str | None = None
     x_properties: dict[str, str] = {}
     for token in tokens:
         parts = token.split(":", 2)
@@ -93,18 +94,26 @@ def _parse_tokens(tokens: Sequence[str]) -> tuple[int | None, datetime | None, d
             parsed = _parse_due(parts[1])
             if parsed is not None:
                 due = parsed
+        elif key == "status" and len(parts) > 1:
+            status = parts[1].strip().upper()
         elif key == "x" and len(parts) == 3:
             x_properties[parts[1]] = parts[2]
-    return priority, due, x_properties
+    return priority, due, status, x_properties
 
 
 def _parse_payload(description: str, tokens: Sequence[str]) -> TaskPayload:
-    priority, due, x_properties = _parse_tokens(tokens)
-    return TaskPayload(summary=description, priority=priority, due=due, x_properties=x_properties)
+    priority, due, status, x_properties = _parse_tokens(tokens)
+    return TaskPayload(
+        summary=description,
+        priority=priority,
+        due=due,
+        status=status or "IN-PROCESS",
+        x_properties=x_properties,
+    )
 
 
 def _parse_patch(tokens: Sequence[str]) -> TaskPatch:
-    priority, due, x_properties = _parse_tokens(tokens)
+    priority, due, status, x_properties = _parse_tokens(tokens)
     summary: str | None = None
     for token in tokens:
         parts = token.split(":", 1)
@@ -112,7 +121,13 @@ def _parse_patch(tokens: Sequence[str]) -> TaskPatch:
             continue
         if parts[0].strip().lower() == "summary":
             summary = parts[1]
-    return TaskPatch(summary=summary, priority=priority, due=due, x_properties=x_properties)
+    return TaskPatch(
+        summary=summary,
+        priority=priority,
+        due=due,
+        status=status,
+        x_properties=x_properties,
+    )
 
 
 def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
@@ -278,6 +293,40 @@ def modify(
 
     updated = _run_with_client(env, config_file, callback)
     typer.echo(updated.uid)
+
+
+@app.command()
+def do(
+    uids: str,
+    env: str | None = typer.Option(None, "--env", help="env name"),
+    config_file: Path | None = typer.Option(
+        None,
+        "--config-file",
+        exists=True,
+        dir_okay=False,
+        file_okay=True,
+        readable=True,
+        resolve_path=True,
+        help="Path to an existing CalDAV config TOML.",
+    ),
+):
+    targets = [token.strip() for token in uids.split(",") if token.strip()]
+    if not targets:
+        typer.echo("no targets provided")
+        raise typer.Exit(code=1)
+    
+    patch = TaskPatch(status="COMPLETED")
+    
+    def mark_done_many(client: CalDAVClient) -> list[str]:
+        completed: list[str] = []
+        for target in targets:
+            resolved_uid = _resolve_task_identifier(client, target)
+            client.modify_task(resolved_uid, patch)
+            completed.append(resolved_uid)
+        return completed
+    
+    completed = _run_with_client(env, config_file, mark_done_many)
+    typer.echo(f"marked {len(completed)} tasks as done")
 
 
 @app.command(name="del")

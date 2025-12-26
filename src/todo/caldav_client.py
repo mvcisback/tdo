@@ -52,7 +52,14 @@ class CalDAVClient:
     def create_task(self, payload: TaskPayload) -> Task:
         calendar = self._ensure_calendar()
         uid = self._uid_from_summary(payload.summary)
-        body = self._build_ics(payload.summary, payload.due, payload.priority, payload.x_properties, uid)
+        body = self._build_ics(
+            payload.summary,
+            payload.due,
+            payload.priority,
+            payload.x_properties,
+            uid,
+            payload.status,
+        )
         todo = calendar.add_todo(body)
         return self._task_from_data(todo.data)
 
@@ -61,11 +68,17 @@ class CalDAVClient:
         todo = calendar.todo_by_uid(uid)
         if todo is None:
             raise KeyError(f"todo {uid} not found")
-        summary = patch.summary or self._extract_summary(todo.data) or uid
-        body = self._build_ics(summary, patch.due, patch.priority, patch.x_properties, uid)
+        existing = self._task_from_data(todo.data)
+        summary = patch.summary or existing.summary or uid
+        due = patch.due if patch.due is not None else existing.due
+        priority = patch.priority if patch.priority is not None else existing.priority
+        status = patch.status or existing.status
+        x_properties = dict(existing.x_properties)
+        x_properties.update(patch.x_properties)
+        body = self._build_ics(summary, due, priority, x_properties, uid, status)
         todo.data = body
         todo.save()
-        return Task(uid=uid, summary=summary, due=patch.due, priority=patch.priority, x_properties=patch.x_properties)
+        return Task(uid=uid, summary=summary, status=status, due=due, priority=priority, x_properties=x_properties)
 
     def delete_task(self, uid: str) -> str:
         calendar = self._ensure_calendar()
@@ -87,6 +100,7 @@ class CalDAVClient:
         priority: int | None,
         x_properties: Dict[str, str],
         uid: str,
+        status: str | None,
     ) -> str:
         lines = [
             "BEGIN:VCALENDAR",
@@ -96,6 +110,8 @@ class CalDAVClient:
             f"UID:{uid}",
             f"SUMMARY:{summary}",
         ]
+        if status:
+            lines.append(f"STATUS:{status}")
         if priority is not None:
             lines.append(f"PRIORITY:{priority}")
         if due is not None:
@@ -112,6 +128,7 @@ class CalDAVClient:
         summary = ""
         due = None
         priority = None
+        status: str | None = None
         x_properties: Dict[str, str] = {}
         uid = ""
         for raw in data.splitlines():
@@ -130,9 +147,18 @@ class CalDAVClient:
                     priority = int(value)
                 except ValueError:
                     pass
+            elif key == "STATUS":
+                status = value
             elif key.startswith("X-"):
                 x_properties[key] = value
-        return Task(uid=uid, summary=summary, due=due, priority=priority, x_properties=x_properties)
+        return Task(
+            uid=uid,
+            summary=summary,
+            status=status or "IN-PROCESS",
+            due=due,
+            priority=priority,
+            x_properties=x_properties,
+        )
 
     def _parse_due(self, raw: str) -> datetime | None:
         try:

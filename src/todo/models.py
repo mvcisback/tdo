@@ -9,6 +9,7 @@ from typing import Dict, Optional
 class Task:
     uid: str
     summary: str
+    status: str = "IN-PROCESS"
     due: Optional[datetime] = None
     priority: Optional[int] = None
     x_properties: Dict[str, str] = field(default_factory=dict)
@@ -17,6 +18,7 @@ class Task:
 @dataclass
 class TaskPayload:
     summary: str
+    status: str = "IN-PROCESS"
     due: Optional[datetime] = None
     priority: Optional[int] = None
     x_properties: Dict[str, str] = field(default_factory=dict)
@@ -25,6 +27,7 @@ class TaskPayload:
 @dataclass
 class TaskPatch:
     summary: Optional[str] = None
+    status: Optional[str] = None
     due: Optional[datetime] = None
     priority: Optional[int] = None
     x_properties: Dict[str, str] = field(default_factory=dict)
@@ -32,6 +35,7 @@ class TaskPatch:
     def has_changes(self) -> bool:
         return bool(
             self.summary
+            or self.status
             or self.priority is not None
             or self.due is not None
             or self.x_properties

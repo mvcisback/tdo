@@ -20,6 +20,7 @@ def test_build_ics_includes_priority_due_and_x_props() -> None:
         2,
         {"X-TEST": "value"},
         "uid-42",
+        None,
     )
     assert "SUMMARY:Inspect" in ics
     assert "PRIORITY:2" in ics
@@ -42,6 +43,7 @@ def test_task_from_data_parses_fields() -> None:
         4,
         {"X-ORG": "dev"},
         "task-100",
+        None,
     )
     task = client._task_from_data(body)
     assert task.uid == "task-100"
