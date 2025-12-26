@@ -16,7 +16,12 @@ runner = CliRunner()
 class DummyClient:
     last_payload: TaskPayload | None = None
     last_patch: TaskPatch | None = None
+    last_modified_uid: str | None = None
     deleted: list[str] = []
+    default_tasks: list[Task] = [
+        Task(uid="list-task", summary="List task", due=None, priority=3)
+    ]
+    list_entries: list[Task] = list(default_tasks)
 
     def __init__(self, config: CaldavConfig) -> None:
         self.config = config
@@ -25,7 +30,9 @@ class DummyClient:
     def reset(cls) -> None:
         cls.last_payload = None
         cls.last_patch = None
+        cls.last_modified_uid = None
         cls.deleted = []
+        cls.list_entries = list(cls.default_tasks)
 
     def __enter__(self) -> DummyClient:
         return self
@@ -45,6 +52,7 @@ class DummyClient:
 
     def modify_task(self, uid: str, patch: TaskPatch) -> Task:
         DummyClient.last_patch = patch
+        DummyClient.last_modified_uid = uid
         return Task(
             uid=uid,
             summary=patch.summary or uid,
@@ -58,14 +66,7 @@ class DummyClient:
         return uid
 
     def list_tasks(self) -> list[Task]:
-        return [
-            Task(
-                uid="list-task",
-                summary="List task",
-                due=None,
-                priority=3,
-            )
-        ]
+        return list(DummyClient.list_entries)
 
 
 @pytest.fixture(autouse=True)
@@ -114,6 +115,16 @@ def test_delete_command_accepts_multiple() -> None:
     assert DummyClient.deleted == ["one", "two"]
 
 
+def test_delete_command_accepts_numeric_identifiers() -> None:
+    DummyClient.list_entries = [
+        Task(uid="first", summary="First", due=None, priority=1),
+        Task(uid="second", summary="Second", due=None, priority=2),
+    ]
+    result = runner.invoke(cli.app, ["del", "1"])
+    assert result.exit_code == 0
+    assert DummyClient.deleted == ["first"]
+
+
 def test_list_command_outputs_tasks() -> None:
     result = runner.invoke(cli.app, ["list"])
     assert result.exit_code == 0
@@ -124,6 +135,16 @@ def test_list_command_outputs_tasks() -> None:
     assert data_line.split()[0] == "1"
     assert "List task" in data_line
     assert "list-task" not in result.stdout
+
+
+def test_modify_command_accepts_numeric_identifier() -> None:
+    DummyClient.list_entries = [
+        Task(uid="first", summary="First", due=None, priority=1),
+        Task(uid="second", summary="Second", due=None, priority=2),
+    ]
+    result = runner.invoke(cli.app, ["modify", "1", "summary:Updated"])
+    assert result.exit_code == 0
+    assert DummyClient.last_modified_uid == "first"
 
 
 def test_list_command_shows_uids_when_enabled(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

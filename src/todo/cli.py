@@ -119,6 +119,23 @@ def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
     return deleted
 
 
+def _sorted_tasks(client: CalDAVClient) -> list[Task]:
+    return sorted(client.list_tasks(), key=_task_sort_key)
+
+
+def _resolve_task_identifier(client: CalDAVClient, identifier: str) -> str:
+    tasks = _sorted_tasks(client)
+    index_map = {str(index + 1): task.uid for index, task in enumerate(tasks)}
+    candidate = identifier.strip()
+    if not candidate:
+        return identifier
+    return index_map.get(candidate, identifier)
+
+
+def _resolve_delete_targets(client: CalDAVClient, targets: list[str]) -> list[str]:
+    return [_resolve_task_identifier(client, token) for token in targets]
+
+
 def _task_sort_key(task: Task) -> tuple[datetime, int, str]:
     due_key = task.due or datetime.max
     priority_key = task.priority if task.priority is not None else 10
@@ -274,7 +291,12 @@ def modify(
     if not patch.has_changes():
         typer.echo("no changes provided")
         raise typer.Exit(code=1)
-    updated = _run_with_client(env, config_file, lambda client: client.modify_task(uid, patch))
+
+    def callback(client: CalDAVClient) -> Task:
+        target_uid = _resolve_task_identifier(client, uid)
+        return client.modify_task(target_uid, patch)
+
+    updated = _run_with_client(env, config_file, callback)
     typer.echo(updated.uid)
 
 
@@ -297,7 +319,11 @@ def delete(
     if not targets:
         typer.echo("no targets provided")
         raise typer.Exit(code=1)
-    deleted = _run_with_client(env, config_file, lambda client: _delete_many(client, targets))
+    deleted = _run_with_client(
+        env,
+        config_file,
+        lambda client: _delete_many(client, _resolve_delete_targets(client, targets)),
+    )
     typer.echo(f"deleted {len(deleted)} tasks")
 
 
