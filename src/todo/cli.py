@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Sequence, TypeVar
 
 import typer
+from rich import box
+from rich.console import Console
+from rich.table import Table
 
 from .caldav_client import CalDAVClient
 from .config import CaldavConfig, config_file_path, load_config, load_config_from_path, write_config_file
@@ -163,39 +167,6 @@ def _format_due_label(due: datetime | None, now: datetime) -> str:
 SUMMARY_WIDTH = 45
 
 
-ROW_COLORS = ["", "\033[48;5;250m\033[38;5;0m"]
-ANSI_RESET = "\033[0m"
-COLUMN_BORDER = "│"
-COLUMN_ORDER = ["id", "age", "project", "tag", "due", "description", "urg"]
-COLUMN_LABELS = {
-    "id": "ID",
-    "age": "Age",
-    "project": "Project",
-    "tag": "Tag",
-    "due": "Due",
-    "description": "Description",
-    "urg": "Urg",
-}
-COLUMN_WIDTHS = {
-    "id": 3,
-    "age": 4,
-    "project": 12,
-    "tag": 10,
-    "due": 10,
-    "description": 45,
-    "urg": 4,
-}
-COLUMN_COLORS = {
-    "id": "\033[38;5;27m",
-    "age": "\033[38;5;51m",
-    "project": "\033[38;5;147m",
-    "tag": "\033[38;5;178m",
-    "due": "\033[38;5;220m",
-    "description": "\033[38;5;39m",
-    "urg": "\033[38;5;208m",
-}
-
-
 def _format_project(task: Task) -> str:
     project = task.x_properties.get("X-PROJECT") or task.x_properties.get("X-TASKS-ORG-ORDER")
     return project or "-"
@@ -212,45 +183,24 @@ def _format_due_date(due: datetime | None) -> str:
     return due.strftime("%Y-%m-%d")
 
 
-def _pad(value: str, width: int, align: str = "left") -> str:
-    if len(value) > width:
-        return value[: width] if align == "left" else value[-width:]
-    if align == "right":
-        return value.rjust(width)
-    return value.ljust(width)
-
-
-def _format_cell(column: str, value: str, align: str = "left", colorize: bool = True) -> str:
-    padded = _pad(value, COLUMN_WIDTHS[column], align=align)
-    if not colorize:
-        return padded
-    color = COLUMN_COLORS.get(column, "")
-    if color:
-        return f"{color}{padded}{ANSI_RESET}"
-    return padded
-
-
-def _header_row() -> str:
-    cells = [
-        _format_cell(
-            column,
-            COLUMN_LABELS[column],
-            align="right" if column in {"id", "age", "urg"} else "left",
-            colorize=False,
-        )
-        for column in COLUMN_ORDER
-    ]
-    return f" {COLUMN_BORDER} ".join(cells)
-
-
-def _row_separator() -> str:
-    total_width = sum(COLUMN_WIDTHS[column] for column in COLUMN_ORDER) + 3 * (len(COLUMN_ORDER) - 1)
-    return "─" * total_width
-
-
 def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
-    typer.echo(_header_row())
-    typer.echo(_row_separator())
+    console = Console(file=sys.stdout, color_system="auto")
+    table = Table(
+        box=box.SIMPLE_HEAVY,
+        show_header=True,
+        header_style="bold cyan",
+        row_styles=["", "dim"],
+        padding=(0, 1),
+    )
+    table.add_column("ID", justify="right", style="cyan", width=3)
+    table.add_column("Age", justify="right", style="bright_blue", width=4)
+    table.add_column("Project", style="magenta", width=12)
+    table.add_column("Tag", style="yellow", width=10)
+    table.add_column("Due", style="bright_green", width=10)
+    table.add_column("Description", style="white", width=45)
+    table.add_column("Urg", justify="right", style="bright_red", width=4)
+    if show_uids:
+        table.add_column("UID", style="dim")
     now = datetime.now()
     sorted_tasks = sorted(tasks, key=_task_sort_key)
     for index, task in enumerate(sorted_tasks, start=1):
@@ -259,24 +209,25 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
         tag = _format_tag(task)
         due_date = _format_due_date(task.due)
         summary = task.summary or ""
-        trimmed_summary = summary[: COLUMN_WIDTHS["description"] - 3] + "..." if len(summary) > COLUMN_WIDTHS["description"] else summary
+        trimmed_summary = (
+            summary[: SUMMARY_WIDTH - 3] + "..."
+            if len(summary) > SUMMARY_WIDTH
+            else summary
+        )
         priority_label = str(task.priority) if task.priority is not None else "-"
-        cells = [
-            _format_cell("id", str(index), align="right"),
-            _format_cell("age", due_label, align="right"),
-            _format_cell("project", project),
-            _format_cell("tag", tag),
-            _format_cell("due", due_date),
-            _format_cell("description", trimmed_summary),
-            _format_cell("urg", priority_label, align="right"),
+        row = [
+            str(index),
+            due_label,
+            project,
+            tag,
+            due_date,
+            trimmed_summary,
+            priority_label,
         ]
-        row = f" {COLUMN_BORDER} ".join(cells)
         if show_uids:
-            row = f"{row} {task.uid}"
-        color = ROW_COLORS[(index - 1) % len(ROW_COLORS)]
-        if color:
-            row = f"{color}{row}{ANSI_RESET}"
-        typer.echo(row)
+            row.append(task.uid)
+        table.add_row(*row)
+    console.print(table)
 
 
 @app.command()

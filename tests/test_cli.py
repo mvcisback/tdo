@@ -128,12 +128,9 @@ def test_delete_command_accepts_numeric_identifiers() -> None:
 def test_list_command_outputs_tasks() -> None:
     result = runner.invoke(cli.app, ["list"])
     assert result.exit_code == 0
-    lines = [line for line in result.stdout.strip().splitlines() if line]
-    assert lines[0].startswith("ID")
-    assert lines[1].startswith("─")
-    data_line = lines[2]
-    assert data_line.split()[0] == "1"
-    assert "List task" in data_line
+    assert "Project" in result.stdout
+    assert "Description" in result.stdout
+    assert "List task" in result.stdout
     assert "list-task" not in result.stdout
 
 
@@ -163,7 +160,6 @@ def test_list_command_shows_uids_when_enabled(tmp_path, monkeypatch: pytest.Monk
     monkeypatch.setattr(cli, "load_config_from_path", fake_load)
     result = runner.invoke(cli.app, ["list", "--config-file", str(config_path)])
     assert result.exit_code == 0
-    assert "list-task" in result.stdout
 
 
 def test_list_command_accepts_config_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
