@@ -118,9 +118,11 @@ def test_list_command_outputs_tasks() -> None:
     result = runner.invoke(cli.app, ["list"])
     assert result.exit_code == 0
     lines = [line for line in result.stdout.strip().splitlines() if line]
-    assert lines
-    assert lines[0].split()[0] == "1"
-    assert "List task" in lines[0]
+    assert lines[0].startswith("ID")
+    assert lines[1].startswith("-")
+    data_line = lines[2]
+    assert data_line.split()[0] == "1"
+    assert "List task" in data_line
     assert "list-task" not in result.stdout
 
 

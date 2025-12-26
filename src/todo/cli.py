@@ -146,19 +146,90 @@ def _format_due_label(due: datetime | None, now: datetime) -> str:
 SUMMARY_WIDTH = 45
 
 
+ROW_COLORS = ["", "\033[48;5;250m\033[38;5;0m"]
+ANSI_RESET = "\033[0m"
+
+COLUMN_WIDTHS = {
+    "id": 3,
+    "age": 4,
+    "project": 12,
+    "tag": 10,
+    "due": 10,
+    "description": 45,
+    "urg": 4,
+}
+
+
+def _format_project(task: Task) -> str:
+    project = task.x_properties.get("X-PROJECT") or task.x_properties.get("X-TASKS-ORG-ORDER")
+    return project or "-"
+
+
+def _format_tag(task: Task) -> str:
+    tag = task.x_properties.get("X-TAG") or task.x_properties.get("X-COLOR")
+    return tag or "-"
+
+
+def _format_due_date(due: datetime | None) -> str:
+    if not due:
+        return "-"
+    return due.strftime("%Y-%m-%d")
+
+
+def _pad(value: str, width: int, align: str = "left") -> str:
+    if len(value) > width:
+        return value[: width] if align == "left" else value[-width:]
+    if align == "right":
+        return value.rjust(width)
+    return value.ljust(width)
+
+
+def _header_row() -> str:
+    parts = [
+        _pad("ID", COLUMN_WIDTHS["id"], align="right"),
+        _pad("Age", COLUMN_WIDTHS["age"], align="right"),
+        _pad("Project", COLUMN_WIDTHS["project"]),
+        _pad("Tag", COLUMN_WIDTHS["tag"]),
+        _pad("Due", COLUMN_WIDTHS["due"]),
+        _pad("Description", COLUMN_WIDTHS["description"]),
+        _pad("Urg", COLUMN_WIDTHS["urg"], align="right"),
+    ]
+    return " ".join(parts)
+
+
+def _row_separator() -> str:
+    total = sum(COLUMN_WIDTHS.values()) + 6
+    return "-" * total
+
+
 def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
+    typer.echo(_header_row())
+    typer.echo(_row_separator())
     now = datetime.now()
     sorted_tasks = sorted(tasks, key=_task_sort_key)
     for index, task in enumerate(sorted_tasks, start=1):
         due_label = _format_due_label(task.due, now)
+        project = _format_project(task)
+        tag = _format_tag(task)
+        due_date = _format_due_date(task.due)
         summary = task.summary or ""
-        trimmed_summary = summary
-        if len(summary) > SUMMARY_WIDTH:
-            trimmed_summary = summary[: SUMMARY_WIDTH - 3] + "..."
+        trimmed_summary = summary[: COLUMN_WIDTHS["description"] - 3] + "..." if len(summary) > COLUMN_WIDTHS["description"] else summary
         priority_label = str(task.priority) if task.priority is not None else "-"
-        row = f"{index:2d} {due_label:>4} {trimmed_summary:<{SUMMARY_WIDTH}} {priority_label:>2}"
+        parts = [
+            _pad(str(index), COLUMN_WIDTHS["id"], align="right"),
+            _pad(due_label, COLUMN_WIDTHS["age"], align="right"),
+            _pad(project, COLUMN_WIDTHS["project"]),
+            _pad(tag, COLUMN_WIDTHS["tag"]),
+            _pad(due_date, COLUMN_WIDTHS["due"]),
+            _pad(trimmed_summary, COLUMN_WIDTHS["description"]),
+            _pad(priority_label, COLUMN_WIDTHS["urg"], align="right"),
+        ]
+        row = " ".join(parts)
         if show_uids:
             row = f"{row} {task.uid}"
+        color = ROW_COLORS[(index - 1) % len(ROW_COLORS)]
+        if color:
+            row = f"{color}{row}{ANSI_RESET}"
         typer.echo(row)
 
 
