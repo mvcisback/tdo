@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -32,6 +33,27 @@ def _resolve_config(env: str | None, config_file: Path | None) -> CaldavConfig:
     if config_file:
         return load_config_from_path(config_file)
     return load_config(env)
+
+
+@dataclass
+class ParsedTokens:
+    priority: int | None = None
+    due: datetime | None = None
+    status: str | None = None
+    project: str | None = None
+    tags: list[str] = field(default_factory=list)
+    x_properties: dict[str, str] = field(default_factory=dict)
+
+
+def _merge_tags(existing: str | None, additions: Sequence[str]) -> str | None:
+    normalized: list[str] = []
+    if existing:
+        normalized.extend(tag.strip() for tag in existing.split(",") if tag.strip())
+    for addition in additions:
+        candidate = addition.strip()
+        if candidate and candidate not in normalized:
+            normalized.append(candidate)
+    return ",".join(normalized) if normalized else None
 
 
 def _require_value(value: str | None, prompt_text: str) -> str:
@@ -76,44 +98,56 @@ def _parse_due(raw: str) -> datetime | None:
         return None
 
 
-def _parse_tokens(tokens: Sequence[str]) -> tuple[int | None, datetime | None, str | None, dict[str, str]]:
-    priority: int | None = None
-    due: datetime | None = None
-    status: str | None = None
-    x_properties: dict[str, str] = {}
+def _parse_tokens(tokens: Sequence[str]) -> ParsedTokens:
+    parsed = ParsedTokens()
     for token in tokens:
-        parts = token.split(":", 2)
+        candidate = token.strip()
+        if not candidate:
+            continue
+        if candidate.startswith("+") and len(candidate) > 1:
+            parsed.tags.append(candidate[1:])
+            continue
+        parts = candidate.split(":", 2)
         if not parts:
             continue
         key = parts[0].strip().lower()
         if key == "pri" and len(parts) > 1:
-            parsed = _parse_priority(parts[1])
-            if parsed is not None:
-                priority = parsed
+            value = _parse_priority(parts[1])
+            if value is not None:
+                parsed.priority = value
         elif key == "due" and len(parts) > 1:
-            parsed = _parse_due(parts[1])
-            if parsed is not None:
-                due = parsed
+            value = _parse_due(parts[1])
+            if value is not None:
+                parsed.due = value
         elif key == "status" and len(parts) > 1:
-            status = parts[1].strip().upper()
+            parsed.status = parts[1].strip().upper()
+        elif key == "project" and len(parts) > 1:
+            parsed.project = parts[1]
         elif key == "x" and len(parts) == 3:
-            x_properties[parts[1]] = parts[2]
-    return priority, due, status, x_properties
+            parsed.x_properties[parts[1]] = parts[2]
+    return parsed
 
 
 def _parse_payload(description: str, tokens: Sequence[str]) -> TaskPayload:
-    priority, due, status, x_properties = _parse_tokens(tokens)
+    parsed = _parse_tokens(tokens)
+    x_properties = dict(parsed.x_properties)
+    if parsed.project:
+        x_properties["X-PROJECT"] = parsed.project
+    if parsed.tags:
+        merged_tags = _merge_tags(x_properties.get("X-TAGS"), parsed.tags)
+        if merged_tags:
+            x_properties["X-TAGS"] = merged_tags
     return TaskPayload(
         summary=description,
-        priority=priority,
-        due=due,
-        status=status or "IN-PROCESS",
+        priority=parsed.priority,
+        due=parsed.due,
+        status=parsed.status or "IN-PROCESS",
         x_properties=x_properties,
     )
 
 
 def _parse_patch(tokens: Sequence[str]) -> TaskPatch:
-    priority, due, status, x_properties = _parse_tokens(tokens)
+    parsed = _parse_tokens(tokens)
     summary: str | None = None
     for token in tokens:
         parts = token.split(":", 1)
@@ -121,11 +155,16 @@ def _parse_patch(tokens: Sequence[str]) -> TaskPatch:
             continue
         if parts[0].strip().lower() == "summary":
             summary = parts[1]
+    x_properties = dict(parsed.x_properties)
+    if parsed.project:
+        x_properties["X-PROJECT"] = parsed.project
+    if parsed.tags:
+        x_properties["X-TAGS"] = ",".join(parsed.tags)
     return TaskPatch(
         summary=summary,
-        priority=priority,
-        due=due,
-        status=status,
+        priority=parsed.priority,
+        due=parsed.due,
+        status=parsed.status,
         x_properties=x_properties,
     )
 
@@ -188,6 +227,9 @@ def _format_project(task: Task) -> str:
 
 
 def _format_tag(task: Task) -> str:
+    tags = task.x_properties.get("X-TAGS")
+    if tags:
+        return tags
     tag = task.x_properties.get("X-TAG") or task.x_properties.get("X-COLOR")
     return tag or "-"
 

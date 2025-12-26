@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,26 @@ def test_add_command_parses_tokens() -> None:
     assert DummyClient.last_payload is not None
     assert DummyClient.last_payload.priority == 1
     assert DummyClient.last_payload.x_properties == {"X-TEST": "value"}
+
+
+def test_add_command_parses_tags_and_project() -> None:
+    result = runner.invoke(
+        cli.app,
+        [
+            "add",
+            "Tagged",
+            "+tag1",
+            "+tag2",
+            "project:work",
+            "due:2025-01-01T03:00:00",
+        ],
+    )
+    assert result.exit_code == 0
+    payload = DummyClient.last_payload
+    assert payload is not None
+    assert payload.x_properties.get("X-PROJECT") == "work"
+    assert payload.x_properties.get("X-TAGS") == "tag1,tag2"
+    assert payload.due == datetime(2025, 1, 1, 3, 0, 0)
 
 
 def test_modify_command_accepts_summary_patch() -> None:
