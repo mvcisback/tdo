@@ -49,7 +49,11 @@ Custom extensions can be added via `x:<property>:<value>` when creating or modif
 
 ## Testing
 
-Run the async test suite once implemented (e.g., `pytest tests`).
+Run the async test suite inside the registered `.venv` so dependencies stay locked:
+
+```
+nix develop --command bash -c "uv run pytest"
+```
 
 ## Contributing
 
