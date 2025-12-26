@@ -5,7 +5,7 @@ import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, Union
 
 
 @dataclass
@@ -14,6 +14,7 @@ class CaldavConfig:
     username: str
     password: str | None = None
     token: str | None = None
+    show_uids: bool = False
 
 
 def resolve_env(env: str | None = None) -> str:
@@ -52,23 +53,36 @@ def _parse_config_file(path: Path) -> Iterable[Tuple[str, str]]:
         yield key.strip().lower(), value.strip()
 
 
-def _parse_toml_file(path: Path) -> dict[str, str]:
+def _parse_toml_file(path: Path) -> dict[str, Union[str, bool]]:
     data = tomllib.loads(path.read_text())
     section = data.get("caldav")
     if not isinstance(section, dict):
         return {}
-    result: dict[str, str] = {}
+    result: dict[str, Union[str, bool]] = {}
     for key, value in section.items():
         if value is None:
             continue
-        result[key.lower()] = str(value).strip()
+        result[key.lower()] = value
     return result
 
 
-def _load_file_values(path: Path) -> dict[str, str]:
+def _load_file_values(path: Path) -> dict[str, Union[str, bool]]:
     if path.suffix == ".toml":
         return _parse_toml_file(path)
     return dict(_parse_config_file(path))
+
+
+def _parse_bool_like(value: str | bool | None) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    candidate = str(value).strip().lower()
+    if candidate in {"true", "1", "yes", "y", "on"}:
+        return True
+    if candidate in {"false", "0", "no", "n", "off"}:
+        return False
+    return None
 
 
 def load_config(env: str | None = None, config_home: Path | None = None) -> CaldavConfig:
@@ -77,6 +91,7 @@ def load_config(env: str | None = None, config_home: Path | None = None) -> Cald
         "username": os.environ.get("TODO_USERNAME"),
         "password": os.environ.get("TODO_PASSWORD"),
         "token": os.environ.get("TODO_TOKEN"),
+        "show_uids": os.environ.get("TODO_SHOW_UIDS"),
     }
     path = config_file_path(env, config_home)
     if not path.exists():
@@ -96,11 +111,18 @@ def load_config_from_path(path: Path) -> CaldavConfig:
     return _build_config(values)
 
 
-def _build_config(values: dict[str, str | None]) -> CaldavConfig:
+def _build_config(values: dict[str, str | bool | None]) -> CaldavConfig:
     url = values.get("calendar_url")
     username = values.get("username")
     password = values.get("password")
     token = values.get("token")
+    show_uids = _parse_bool_like(values.get("show_uids"))
     if not url or not username:
         raise RuntimeError("caldav configuration requires calendar_url and username")
-    return CaldavConfig(calendar_url=url, username=username, password=password, token=token)
+    return CaldavConfig(
+        calendar_url=url,
+        username=username,
+        password=password,
+        token=token,
+        show_uids=show_uids if show_uids is not None else False,
+    )

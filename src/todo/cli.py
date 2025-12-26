@@ -119,6 +119,49 @@ def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
     return deleted
 
 
+def _task_sort_key(task: Task) -> tuple[datetime, int, str]:
+    due_key = task.due or datetime.max
+    priority_key = task.priority if task.priority is not None else 10
+    summary_key = task.summary.strip().lower() if task.summary else ""
+    return due_key, priority_key, summary_key
+
+
+def _format_due_label(due: datetime | None, now: datetime) -> str:
+    if due is None:
+        return "--"
+    delta = due - now
+    sign = "-" if delta.total_seconds() < 0 else ""
+    delta = abs(delta)
+    if delta.days > 0:
+        return f"{sign}{delta.days}d"
+    hours = delta.seconds // 3600
+    if hours > 0:
+        return f"{sign}{hours}h"
+    minutes = (delta.seconds % 3600) // 60
+    if minutes > 0:
+        return f"{sign}{minutes}m"
+    return f"{sign}0m"
+
+
+SUMMARY_WIDTH = 45
+
+
+def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
+    now = datetime.now()
+    sorted_tasks = sorted(tasks, key=_task_sort_key)
+    for index, task in enumerate(sorted_tasks, start=1):
+        due_label = _format_due_label(task.due, now)
+        summary = task.summary or ""
+        trimmed_summary = summary
+        if len(summary) > SUMMARY_WIDTH:
+            trimmed_summary = summary[: SUMMARY_WIDTH - 3] + "..."
+        priority_label = str(task.priority) if task.priority is not None else "-"
+        row = f"{index:2d} {due_label:>4} {trimmed_summary:<{SUMMARY_WIDTH}} {priority_label:>2}"
+        if show_uids:
+            row = f"{row} {task.uid}"
+        typer.echo(row)
+
+
 @app.command()
 def add(
     description: str,
@@ -201,13 +244,12 @@ def list_tasks(
         help="Path to an existing CalDAV config TOML.",
     ),
 ) -> None:
+    config = _resolve_config(env, config_file)
     tasks = _run_with_client(env, config_file, lambda client: client.list_tasks())
     if not tasks:
         typer.echo("no tasks found")
         return
-    for task in tasks:
-        due = task.due.isoformat() if task.due else "-"
-        typer.echo(f"{task.uid}\t{due}\t{task.summary}")
+    _pretty_print_tasks(tasks, config.show_uids)
 
 
 @config_app.command(name="init")

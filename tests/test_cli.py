@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -63,7 +62,7 @@ class DummyClient:
             Task(
                 uid="list-task",
                 summary="List task",
-                due=datetime(2025, 1, 1, 12, 0, 0),
+                due=None,
                 priority=3,
             )
         ]
@@ -118,6 +117,29 @@ def test_delete_command_accepts_multiple() -> None:
 def test_list_command_outputs_tasks() -> None:
     result = runner.invoke(cli.app, ["list"])
     assert result.exit_code == 0
+    lines = [line for line in result.stdout.strip().splitlines() if line]
+    assert lines
+    assert lines[0].split()[0] == "1"
+    assert "List task" in lines[0]
+    assert "list-task" not in result.stdout
+
+
+def test_list_command_shows_uids_when_enabled(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "config.radicale-test.toml"
+    config_path.write_text(
+        "[caldav]\ncalendar_url = \"https://example.com/cal\"\nusername = \"tester\"\nshow_uids = true\n"
+    )
+
+    def fake_load(path: Path) -> CaldavConfig:
+        return CaldavConfig(
+            calendar_url="https://example.com/cal",
+            username="tester",
+            show_uids=True,
+        )
+
+    monkeypatch.setattr(cli, "load_config_from_path", fake_load)
+    result = runner.invoke(cli.app, ["list", "--config-file", str(config_path)])
+    assert result.exit_code == 0
     assert "list-task" in result.stdout
 
 
@@ -135,7 +157,8 @@ def test_list_command_accepts_config_file(tmp_path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(cli, "load_config_from_path", fake_load)
     result = runner.invoke(cli.app, ["list", "--config-file", str(config_path)])
     assert result.exit_code == 0
-    assert called == [config_path]
+    assert called
+    assert called[-1] == config_path
 
 
 def test_config_init_command_writes_file(tmp_path) -> None:
