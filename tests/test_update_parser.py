@@ -50,6 +50,8 @@ _TOKEN_OPTIONS = [
     "due:eod",
     "due:tomorrow",
     "due:",
+    "wait:2d",
+    "wait:",
     "status:done",
     "summary:check",
     "word",
@@ -64,6 +66,7 @@ def _simulate_descriptor(raw: str) -> UpdateDescriptor:
     removals: list[str] = []
     project: str | None = None
     due: str | None = None
+    wait: str | None = None
     for position, token in enumerate(tokens):
         if position == 0 and token.isdigit():
             index = int(token)
@@ -82,6 +85,10 @@ def _simulate_descriptor(raw: str) -> UpdateDescriptor:
             value = token.split(":", 1)[1]
             due = value or None
             continue
+        if token.startswith("wait:"):
+            value = token.split(":", 1)[1]
+            wait = value or None
+            continue
     addition_set = set(additions)
     removal_set = set(removals)
     collision = addition_set & removal_set
@@ -93,6 +100,7 @@ def _simulate_descriptor(raw: str) -> UpdateDescriptor:
         remove_tags=frozenset(removal_set),
         project=project,
         due=due,
+        wait=wait,
     )
 
 
@@ -124,6 +132,7 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
             remove_tags=frozenset({"beta"}),
             project="home",
             due="2025-12-01",
+            wait=None,
         ),
     ),
     (
@@ -134,6 +143,7 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
             remove_tags=frozenset({"junk"}),
             project=None,
             due=None,
+            wait=None,
         ),
     ),
     (
@@ -144,6 +154,7 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
             remove_tags=frozenset(),
             project=None,
             due="tomorrow",
+            wait=None,
         ),
     ),
     (
@@ -154,6 +165,7 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
             remove_tags=frozenset({"old"}),
             project="work",
             due=None,
+            wait=None,
         ),
     ),
     (
@@ -164,6 +176,18 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
             remove_tags=frozenset(),
             project=None,
             due="eod",
+            wait=None,
+        ),
+    ),
+    (
+        "4 wait:2d +alpha -beta",
+        UpdateDescriptor(
+            index=4,
+            add_tags=frozenset({"alpha"}),
+            remove_tags=frozenset({"beta"}),
+            project=None,
+            due=None,
+            wait="2d",
         ),
     ),
 ]

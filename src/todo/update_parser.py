@@ -15,11 +15,12 @@ _UPDATE_GRAMMAR = Grammar(
     update = ws? index_part? ws? segments? ws?
     index_part = index
     segments = part (ws part)*
-    part = add_tag / remove_tag / project / due / word
+    part = add_tag / remove_tag / project / due / wait / word
     add_tag = "+" tagname
     remove_tag = "-" tagname
     project = "project:" value
     due = "due:" value
+    wait = "wait:" value
     tagname = ~"[^\s]+"
     value = ~"[^\s]*"
     word = ~"[^\s]+"
@@ -36,6 +37,7 @@ class UpdateDescriptor:
     remove_tags: FrozenSet[str]
     project: str | None
     due: str | None
+    wait: str | None
 
 
 class _UpdateVisitor(NodeVisitor):
@@ -46,6 +48,7 @@ class _UpdateVisitor(NodeVisitor):
         self._removals: list[str] = []
         self.project: str | None = None
         self.due: str | None = None
+        self.wait: str | None = None
 
     def visit_index(self, node, _visited_children):
         if self.index is None and node.text:
@@ -74,6 +77,11 @@ class _UpdateVisitor(NodeVisitor):
         self.due = value or None
         return None
 
+    def visit_wait(self, _node, visited_children):
+        _, value = visited_children
+        self.wait = value or None
+        return None
+
     def visit_tagname(self, node, _visited_children):
         return node.text
 
@@ -93,6 +101,7 @@ class _UpdateVisitor(NodeVisitor):
             remove_tags=frozenset(removals),
             project=self.project,
             due=self.due,
+            wait=self.wait,
         )
 
     def generic_visit(self, node, visited_children):
