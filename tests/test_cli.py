@@ -117,7 +117,9 @@ def test_add_command_parses_tags_and_project() -> None:
     payload = DummyClient.last_payload
     assert payload is not None
     assert payload.x_properties.get("X-PROJECT") == "work"
-    assert payload.x_properties.get("X-TAGS") == "tag1,tag2"
+    tags = payload.x_properties.get("X-TAGS")
+    assert tags is not None
+    assert set(tags.split(",")) == {"tag1", "tag2"}
     assert payload.due == datetime(2025, 1, 1, 3, 0, 0)
 
 
@@ -179,7 +181,8 @@ def test_list_command_shows_uids_when_enabled(tmp_path, monkeypatch: pytest.Monk
         )
 
     monkeypatch.setattr(cli, "load_config_from_path", fake_load)
-    result = runner.invoke(cli.app, ["list", "--config-file", str(config_path)])
+    monkeypatch.setenv("TODO_CONFIG_FILE", str(config_path))
+    result = runner.invoke(cli.app, ["list"])
     assert result.exit_code == 0
 
 
@@ -195,7 +198,8 @@ def test_list_command_accepts_config_file(tmp_path, monkeypatch: pytest.MonkeyPa
         return CaldavConfig(calendar_url="https://example.com/cal", username="tester")
 
     monkeypatch.setattr(cli, "load_config_from_path", fake_load)
-    result = runner.invoke(cli.app, ["list", "--config-file", str(config_path)])
+    monkeypatch.setenv("TODO_CONFIG_FILE", str(config_path))
+    result = runner.invoke(cli.app, ["list"])
     assert result.exit_code == 0
     assert called
     assert called[-1] == config_path

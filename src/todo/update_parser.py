@@ -21,11 +21,11 @@ _UPDATE_GRAMMAR = Grammar(
     project = "project:" value
     due = "due:" value
     wait = "wait:" value
-    tagname = ~"[^\s]+"
-    value = ~"[^\s]*"
-    word = ~"[^\s]+"
+    tagname = ~"[^ \t\r\n]+"
+    value = ~"[^ \t\r\n]*"
+    word = ~"[^ \t\r\n]+"
     index = ~"[0-9]+"
-    ws = ~"\s+"
+    ws = ~"[ \t\r\n]+"
     """,
 )
 

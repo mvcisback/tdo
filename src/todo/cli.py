@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Sequence, TypeVar
 
 import typer
+from parsimonious.exceptions import ParseError
 from rich import box
 from rich.console import Console
 from rich.table import Table
@@ -14,6 +16,8 @@ from rich.table import Table
 from .caldav_client import CalDAVClient
 from .config import CaldavConfig, config_file_path, load_config, load_config_from_path, write_config_file
 from .models import Task, TaskPatch, TaskPayload
+from .time_parser import parse_due_value, parse_wait_value
+from .update_parser import UpdateDescriptor, parse_update
 
 
 T = TypeVar("T")
@@ -23,25 +27,24 @@ app.add_typer(config_app, name="config")
 _CLIENT_FACTORY: type[CalDAVClient] = CalDAVClient
 
 
-def _run_with_client(env: str | None, config_file: Path | None, callback: Callable[[CalDAVClient], T]) -> T:
-    config = _resolve_config(env, config_file)
+def _run_with_client(env: str | None, callback: Callable[[CalDAVClient], T]) -> T:
+    config = _resolve_config(env)
     with _CLIENT_FACTORY(config) as client:
         return callback(client)
 
 
-def _resolve_config(env: str | None, config_file: Path | None) -> CaldavConfig:
-    if config_file:
-        return load_config_from_path(config_file)
+def _resolve_config(env: str | None) -> CaldavConfig:
+    config_path = os.environ.get("TODO_CONFIG_FILE")
+    if config_path:
+        return load_config_from_path(Path(config_path).expanduser())
     return load_config(env)
 
 
 @dataclass
-class ParsedTokens:
+class UpdateMetadata:
     priority: int | None = None
-    due: datetime | None = None
     status: str | None = None
-    project: str | None = None
-    tags: list[str] = field(default_factory=list)
+    summary: str | None = None
     x_properties: dict[str, str] = field(default_factory=dict)
 
 
@@ -82,91 +85,121 @@ def _parse_priority(raw: str) -> int | None:
         return None
 
 
-def _parse_due(raw: str) -> datetime | None:
-    lowered = raw.strip().lower()
-    now = datetime.now()
-    if lowered == "today":
-        return now.replace(hour=23, minute=59, second=59, microsecond=0)
-    if lowered == "tomorrow":
-        target = now + timedelta(days=1)
-        return target.replace(hour=23, minute=59, second=59, microsecond=0)
-    if lowered == "eod":
-        return now.replace(hour=23, minute=59, second=59, microsecond=0)
-    try:
-        return datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-
-
-def _parse_tokens(tokens: Sequence[str]) -> ParsedTokens:
-    parsed = ParsedTokens()
+def _parse_metadata(tokens: Sequence[str]) -> UpdateMetadata:
+    metadata = UpdateMetadata()
     for token in tokens:
         candidate = token.strip()
-        if not candidate:
+        if not candidate or ":" not in candidate:
             continue
-        if candidate.startswith("+") and len(candidate) > 1:
-            parsed.tags.append(candidate[1:])
+        key, rest = candidate.split(":", 1)
+        key_lower = key.strip().lower()
+        value = rest.strip()
+        if key_lower == "pri":
+            priority = _parse_priority(value)
+            if priority is not None:
+                metadata.priority = priority
             continue
-        parts = candidate.split(":", 2)
-        if not parts:
+        if key_lower == "status":
+            metadata.status = value.upper() if value else None
             continue
-        key = parts[0].strip().lower()
-        if key == "pri" and len(parts) > 1:
-            value = _parse_priority(parts[1])
-            if value is not None:
-                parsed.priority = value
-        elif key == "due" and len(parts) > 1:
-            value = _parse_due(parts[1])
-            if value is not None:
-                parsed.due = value
-        elif key == "status" and len(parts) > 1:
-            parsed.status = parts[1].strip().upper()
-        elif key == "project" and len(parts) > 1:
-            parsed.project = parts[1]
-        elif key == "x" and len(parts) == 3:
-            parsed.x_properties[parts[1]] = parts[2]
-    return parsed
+        if key_lower == "summary":
+            metadata.summary = rest
+            continue
+        if key_lower == "x" and ":" in rest:
+            prop_key, prop_value = rest.split(":", 1)
+            metadata.x_properties[prop_key] = prop_value
+    return metadata
 
 
-def _parse_payload(description: str, tokens: Sequence[str]) -> TaskPayload:
-    parsed = _parse_tokens(tokens)
-    x_properties = dict(parsed.x_properties)
-    if parsed.project:
-        x_properties["X-PROJECT"] = parsed.project
-    if parsed.tags:
-        merged_tags = _merge_tags(x_properties.get("X-TAGS"), parsed.tags)
+def _parse_update_descriptor(tokens: Sequence[str]) -> UpdateDescriptor:
+    raw = " ".join(token.strip() for token in tokens if token and token.strip())
+    try:
+        return parse_update(raw)
+    except ParseError as exc:
+        typer.echo(f"unable to parse update arguments: {exc}")
+        raise typer.Exit(code=1)
+
+
+def _resolve_due_value(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    resolved = parse_due_value(raw)
+    if resolved is None:
+        return None
+    return resolved.to("UTC").naive
+
+
+def _apply_tag_changes(existing: str | None, descriptor: UpdateDescriptor) -> str | None:
+    if not descriptor.add_tags and not descriptor.remove_tags:
+        return None
+    normalized = {tag.strip() for tag in (existing or "").split(",") if tag.strip()}
+    normalized.update(descriptor.add_tags)
+    normalized.difference_update(descriptor.remove_tags)
+    return ",".join(sorted(normalized))
+
+
+def _has_update_candidates(descriptor: UpdateDescriptor, metadata: UpdateMetadata) -> bool:
+    return bool(
+        metadata.summary
+        or metadata.priority is not None
+        or metadata.status
+        or metadata.x_properties
+        or descriptor.project
+        or descriptor.due
+        or descriptor.wait
+        or descriptor.add_tags
+        or descriptor.remove_tags
+    )
+
+
+def _build_payload(description: str, descriptor: UpdateDescriptor, metadata: UpdateMetadata) -> TaskPayload:
+    summary = metadata.summary or description
+    due = _resolve_due_value(descriptor.due)
+    x_properties = dict(metadata.x_properties)
+    if descriptor.project:
+        x_properties["X-PROJECT"] = descriptor.project
+    if descriptor.add_tags:
+        merged_tags = _merge_tags(x_properties.get("X-TAGS"), tuple(descriptor.add_tags))
         if merged_tags:
             x_properties["X-TAGS"] = merged_tags
+    if descriptor.wait:
+        wait_value = descriptor.wait.strip()
+        if wait_value:
+            x_properties["X-WAIT"] = wait_value
     return TaskPayload(
-        summary=description,
-        priority=parsed.priority,
-        due=parsed.due,
-        status=parsed.status or "IN-PROCESS",
-        x_properties=x_properties,
-    )
-
-
-def _parse_patch(tokens: Sequence[str]) -> TaskPatch:
-    parsed = _parse_tokens(tokens)
-    summary: str | None = None
-    for token in tokens:
-        parts = token.split(":", 1)
-        if len(parts) < 2:
-            continue
-        if parts[0].strip().lower() == "summary":
-            summary = parts[1]
-    x_properties = dict(parsed.x_properties)
-    if parsed.project:
-        x_properties["X-PROJECT"] = parsed.project
-    if parsed.tags:
-        x_properties["X-TAGS"] = ",".join(parsed.tags)
-    return TaskPatch(
         summary=summary,
-        priority=parsed.priority,
-        due=parsed.due,
-        status=parsed.status,
+        priority=metadata.priority,
+        due=due,
+        status=metadata.status or "IN-PROCESS",
         x_properties=x_properties,
     )
+
+
+def _build_patch_from_descriptor(
+    descriptor: UpdateDescriptor, metadata: UpdateMetadata, existing: Task | None
+) -> TaskPatch:
+    due = _resolve_due_value(descriptor.due)
+    patch = TaskPatch(
+        summary=metadata.summary,
+        priority=metadata.priority,
+        due=due,
+        status=metadata.status,
+    )
+    x_properties = dict(metadata.x_properties)
+    if descriptor.project:
+        x_properties["X-PROJECT"] = descriptor.project
+    if descriptor.wait:
+        wait_value = descriptor.wait.strip()
+        if wait_value and parse_wait_value(wait_value) is not None:
+            x_properties["X-WAIT"] = wait_value
+    tags_value = _apply_tag_changes(existing.x_properties.get("X-TAGS") if existing else None, descriptor)
+    if tags_value is not None:
+        if tags_value:
+            x_properties["X-TAGS"] = tags_value
+        else:
+            x_properties.pop("X-TAGS", None)
+    patch.x_properties = x_properties
+    return patch
 
 
 def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
@@ -181,9 +214,11 @@ def _sorted_tasks(client: CalDAVClient) -> list[Task]:
     return sorted(client.list_tasks(), key=_task_sort_key)
 
 
-def _resolve_task_identifier(client: CalDAVClient, identifier: str) -> str:
-    tasks = _sorted_tasks(client)
-    index_map = {str(index + 1): task.uid for index, task in enumerate(tasks)}
+def _resolve_task_identifier(
+    client: CalDAVClient, identifier: str, tasks: list[Task] | None = None
+) -> str:
+    source_tasks = tasks or _sorted_tasks(client)
+    index_map = {str(index + 1): task.uid for index, task in enumerate(source_tasks)}
     candidate = identifier.strip()
     if not candidate:
         return identifier
@@ -291,20 +326,12 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
 def add(
     description: str,
     env: str | None = typer.Option(None, "--env", help="env name"),
-    config_file: Path | None = typer.Option(
-        None,
-        "--config-file",
-        exists=True,
-        dir_okay=False,
-        file_okay=True,
-        readable=True,
-        resolve_path=True,
-        help="Path to an existing CalDAV config TOML.",
-    ),
     tokens: list[str] | None = typer.Argument(None),
 ):
-    payload = _parse_payload(description, tokens or ())
-    created = _run_with_client(env, config_file, lambda client: client.create_task(payload))
+    descriptor = _parse_update_descriptor(tokens or ())
+    metadata = _parse_metadata(tokens or ())
+    payload = _build_payload(description, descriptor, metadata)
+    created = _run_with_client(env, lambda client: client.create_task(payload))
     typer.echo(created.uid)
 
 
@@ -312,28 +339,27 @@ def add(
 def modify(
     uid: str,
     env: str | None = typer.Option(None, "--env", help="env name"),
-    config_file: Path | None = typer.Option(
-        None,
-        "--config-file",
-        exists=True,
-        dir_okay=False,
-        file_okay=True,
-        readable=True,
-        resolve_path=True,
-        help="Path to an existing CalDAV config TOML.",
-    ),
     tokens: list[str] | None = typer.Argument(None),
 ):
-    patch = _parse_patch(tokens or ())
-    if not patch.has_changes():
+    descriptor = _parse_update_descriptor(tokens or ())
+    metadata = _parse_metadata(tokens or ())
+    if not _has_update_candidates(descriptor, metadata):
         typer.echo("no changes provided")
         raise typer.Exit(code=1)
 
     def callback(client: CalDAVClient) -> Task:
-        target_uid = _resolve_task_identifier(client, uid)
+        tasks = _sorted_tasks(client)
+        target_uid = _resolve_task_identifier(client, uid, tasks)
+        existing = next((task for task in tasks if task.uid == target_uid), None)
+        if existing is None:
+            existing = Task(uid=target_uid, summary=target_uid, due=None, priority=None)
+        patch = _build_patch_from_descriptor(descriptor, metadata, existing)
+        if not patch.has_changes():
+            typer.echo("no changes provided")
+            raise typer.Exit(code=1)
         return client.modify_task(target_uid, patch)
 
-    updated = _run_with_client(env, config_file, callback)
+    updated = _run_with_client(env, callback)
     typer.echo(updated.uid)
 
 
@@ -341,16 +367,6 @@ def modify(
 def do(
     uids: str,
     env: str | None = typer.Option(None, "--env", help="env name"),
-    config_file: Path | None = typer.Option(
-        None,
-        "--config-file",
-        exists=True,
-        dir_okay=False,
-        file_okay=True,
-        readable=True,
-        resolve_path=True,
-        help="Path to an existing CalDAV config TOML.",
-    ),
 ):
     targets = [token.strip() for token in uids.split(",") if token.strip()]
     if not targets:
@@ -367,7 +383,7 @@ def do(
             completed.append(resolved_uid)
         return completed
     
-    completed = _run_with_client(env, config_file, mark_done_many)
+    completed = _run_with_client(env, mark_done_many)
     typer.echo(f"marked {len(completed)} tasks as done")
 
 
@@ -375,16 +391,6 @@ def do(
 def delete(
     uids: str,
     env: str | None = typer.Option(None, "--env", help="env name"),
-    config_file: Path | None = typer.Option(
-        None,
-        "--config-file",
-        exists=True,
-        dir_okay=False,
-        file_okay=True,
-        readable=True,
-        resolve_path=True,
-        help="Path to an existing CalDAV config TOML.",
-    ),
 ):
     targets = [token.strip() for token in uids.split(",") if token.strip()]
     if not targets:
@@ -392,7 +398,6 @@ def delete(
         raise typer.Exit(code=1)
     deleted = _run_with_client(
         env,
-        config_file,
         lambda client: _delete_many(client, _resolve_delete_targets(client, targets)),
     )
     typer.echo(f"deleted {len(deleted)} tasks")
@@ -401,19 +406,9 @@ def delete(
 @app.command(name="list")
 def list_tasks(
     env: str | None = typer.Option(None, "--env", help="env name"),
-    config_file: Path | None = typer.Option(
-        None,
-        "--config-file",
-        exists=True,
-        dir_okay=False,
-        file_okay=True,
-        readable=True,
-        resolve_path=True,
-        help="Path to an existing CalDAV config TOML.",
-    ),
 ) -> None:
-    config = _resolve_config(env, config_file)
-    tasks = _run_with_client(env, config_file, lambda client: client.list_tasks())
+    config = _resolve_config(env)
+    tasks = _run_with_client(env, lambda client: client.list_tasks())
     if not tasks:
         typer.echo("no tasks found")
         return

@@ -8,6 +8,7 @@ An async Python-cli inspired by Taskwarrior that stores tasks on CalDAV servers 
 - Built with existing Python CalDAV libraries and async patterns wherever possible.
 - Retains X-Property metadata like `X-APPLE-SORT-ORDER`, `X-TASKS-ORG-ORDER`, `X-PRIORITY-SCORE`, and other client-specific extensions so downstream clients keep custom ordering, workflows, and tracking data.
 - Designed for extensibility (checklists, Kanban states, time tracking metadata, Nextcloud Deck links) by mirroring Taskwarrior semantics over CalDAV.
+- Add/modify tokens are parsed via a shared PEG grammar so you can mix plain description words with `+tags`, `-tags`, `project:foo`, `due:eod`, `wait:2d`, and other taskwarrior-esque directives.
 
 ## Getting Started
 
@@ -20,7 +21,11 @@ An async Python-cli inspired by Taskwarrior that stores tasks on CalDAV servers 
 
 `todo config init` prompts for the CalDAV calendar URL and username, then stores them under `~/.config/todo/config.<env>.toml` (defaults to `default`).
 
-Pass `--env <name>` to target a different environment (e.g. `default`, `personal`, `work`), `--config-home` to redirect the base directory, and `--force` to overwrite an existing file. Additional options such as `--password`, `--token`, and `--calendar-url` / `--username` can be used to skip the interactive prompts when automating the setup. You can also skip `todo config init` entirely by passing `--config-file <path>` to the other commands so they load the given TOML directly.
+Pass `--env <name>` to target a different environment (e.g. `default`, `personal`, `work`), `--config-home` to redirect the base directory, and `--force` to overwrite an existing file. Additional options such as `--password`, `--token`, and `--calendar-url` / `--username` can be used to skip the interactive prompts when automating the setup.
+
+### Environment-based configuration
+
+Set `TODO_CONFIG_FILE` to point at any existing TOML (or ini-style) CalDAV configuration file when the defaults in `~/.config/todo/` do not work for you. This takes precedence over other config file discovery so scripts can switch contexts quickly by exporting the variable before invoking `todo`. All commands honor that environment variable automatically (no need for `--config-file`).
 
 Sample configs live in `examples/configs/` to show how to write valid `[caldav]` sections for each environment.
 
@@ -41,10 +46,11 @@ Launch a disposable CalDAV backend via `nix run .#radicaleTest`; it binds to por
 
 ```
 todo add "Refactor sync layer" pri:H due:tue x:X-APPLE-SORT-ORDER:10
-todo modify 3 pri:M x:X-KANBAN-STATE:in-progress
+todo modify 3 pri:M +in-progress -backlog project:work wait:2h due:2025-08-01T09:00
 todo del 2,5
 ```
 
+Add/modify commands share a PEG-driven parser that supports the Taskwarrior-style directives shown above, including `+tag`, `-tag`, `project:`, `due:`, `wait:`, and the rich date/duration expressions that mirror Taskwarrior's semantics (e.g., `tomorrow`, `eod`, `1st`, or ISO durations).
 ## X-Property Support
 
 The tool preserves and exposes the following CalDAV X-properties for compatibility with clients that rely on manual ordering, Kanban columns, time tracking, and workflow metadata:
