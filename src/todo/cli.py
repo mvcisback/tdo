@@ -218,21 +218,6 @@ def _sorted_tasks(client: CalDAVClient) -> list[Task]:
     return sorted(client.list_tasks(), key=_task_sort_key)
 
 
-def _resolve_task_identifier(
-    client: CalDAVClient, identifier: str, tasks: list[Task] | None = None
-) -> str:
-    source_tasks = tasks or _sorted_tasks(client)
-    index_map = {str(index + 1): task.uid for index, task in enumerate(source_tasks)}
-    candidate = identifier.strip()
-    if not candidate:
-        return identifier
-    return index_map.get(candidate, identifier)
-
-
-def _resolve_delete_targets(client: CalDAVClient, targets: list[str]) -> list[str]:
-    return [_resolve_task_identifier(client, token) for token in targets]
-
-
 def _task_sort_key(task: Task) -> tuple[datetime, int, str]:
     due_key = task.due or datetime.max
     priority_key = task.priority if task.priority is not None else 10
@@ -326,6 +311,56 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
     console.print(table)
 
 
+_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify"}
+
+
+def _split_filter_and_command(argv: Sequence[str]) -> tuple[str | None, list[str]]:
+    candidates = list(argv)
+    if not candidates:
+        return None, ["list"]
+    first, rest = candidates[0], candidates[1:]
+    if first in _COMMAND_NAMES:
+        return None, candidates
+    if not rest:
+        return first, ["list"]
+    return first, rest
+
+
+def _parse_filter_indices(raw: str | None) -> list[str] | None:
+    if raw is None:
+        return None
+    tokens = [segment.strip() for segment in raw.split(",")]
+    normalized = [token for token in tokens if token]
+    for token in normalized:
+        if not token.isdigit():
+            typer.echo(f"invalid filter token: {token}")
+            raise typer.Exit(code=1)
+    return normalized
+
+
+def _effective_filter_indices(indices: list[str] | None) -> list[str]:
+    if indices is None:
+        return []
+    return indices
+
+
+def _select_tasks_for_filter(tasks: list[Task], indices: list[str]) -> list[Task]:
+    if not tasks:
+        return []
+    sorted_tasks = sorted(tasks, key=_task_sort_key)
+    if not indices:
+        return list(sorted_tasks)
+    index_map = {str(index + 1): task for index, task in enumerate(sorted_tasks)}
+    selected: list[Task] = []
+    for token in indices:
+        task = index_map.get(token)
+        if task is None:
+            typer.echo(f"filter {token} did not match any task")
+            raise typer.Exit(code=1)
+        selected.append(task)
+    return selected
+
+
 def _normalize_tokens(tokens: Sequence[str] | None) -> list[str]:
     return [token for token in tokens or [] if token != "--"]
 
@@ -347,35 +382,45 @@ def _handle_modify(args: argparse.Namespace) -> None:
         typer.echo("no changes provided")
         raise typer.Exit(code=1)
 
-    def callback(client: CalDAVClient) -> Task:
-        tasks = _sorted_tasks(client)
-        target_uid = _resolve_task_identifier(client, args.uid, tasks)
-        existing = next((task for task in tasks if task.uid == target_uid), None)
-        if existing is None:
-            existing = Task(uid=target_uid, summary=target_uid, due=None, priority=None)
-        patch = _build_patch_from_descriptor(descriptor, metadata, existing)
-        if not patch.has_changes():
+    def callback(client: CalDAVClient) -> int:
+        tasks = _select_tasks_for_filter(
+            _sorted_tasks(client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            typer.echo("no tasks match filter")
+            raise typer.Exit(code=1)
+        modified = 0
+        for task in tasks:
+            patch = _build_patch_from_descriptor(descriptor, metadata, task)
+            if not patch.has_changes():
+                continue
+            client.modify_task(task.uid, patch)
+            modified += 1
+        if modified == 0:
             typer.echo("no changes provided")
             raise typer.Exit(code=1)
-        return client.modify_task(target_uid, patch)
+        return modified
 
-    updated = _run_with_client(args.env, callback)
-    typer.echo(updated.uid)
+    modified_count = _run_with_client(args.env, callback)
+    typer.echo(f"modified {modified_count} tasks")
 
 
 def _handle_do(args: argparse.Namespace) -> None:
-    targets = [token.strip() for token in args.uids.split(",") if token.strip()]
-    if not targets:
-        typer.echo("no targets provided")
-        raise typer.Exit(code=1)
     patch = TaskPatch(status="COMPLETED")
 
     def mark_done_many(client: CalDAVClient) -> list[str]:
+        tasks = _select_tasks_for_filter(
+            _sorted_tasks(client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            typer.echo("no tasks match filter")
+            raise typer.Exit(code=1)
         completed: list[str] = []
-        for target in targets:
-            resolved_uid = _resolve_task_identifier(client, target)
-            client.modify_task(resolved_uid, patch)
-            completed.append(resolved_uid)
+        for task in tasks:
+            client.modify_task(task.uid, patch)
+            completed.append(task.uid)
         return completed
 
     completed = _run_with_client(args.env, mark_done_many)
@@ -383,14 +428,17 @@ def _handle_do(args: argparse.Namespace) -> None:
 
 
 def _handle_delete(args: argparse.Namespace) -> None:
-    targets = [token.strip() for token in args.uids.split(",") if token.strip()]
-    if not targets:
-        typer.echo("no targets provided")
-        raise typer.Exit(code=1)
-    deleted = _run_with_client(
-        args.env,
-        lambda client: _delete_many(client, _resolve_delete_targets(client, targets)),
-    )
+    def callback(client: CalDAVClient) -> list[str]:
+        tasks = _select_tasks_for_filter(
+            _sorted_tasks(client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            typer.echo("no tasks match filter")
+            raise typer.Exit(code=1)
+        return _delete_many(client, [task.uid for task in tasks])
+
+    deleted = _run_with_client(args.env, callback)
     typer.echo(f"deleted {len(deleted)} tasks")
 
 
@@ -400,7 +448,14 @@ def _handle_list(args: argparse.Namespace) -> None:
     if not tasks:
         typer.echo("no tasks found")
         return
-    _pretty_print_tasks(tasks, config.show_uids)
+    filtered_tasks = _select_tasks_for_filter(
+        tasks,
+        _effective_filter_indices(args.filter_indices),
+    )
+    if not filtered_tasks:
+        typer.echo("no tasks match filter")
+        return
+    _pretty_print_tasks(filtered_tasks, config.show_uids)
 
 
 def _handle_config_init(args: argparse.Namespace) -> None:
@@ -444,18 +499,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     modify_parser = subparsers.add_parser("modify")
     modify_parser.add_argument("--env", dest="env", help="env name")
-    modify_parser.add_argument("uid", help="task identifier")
     modify_parser.add_argument("tokens", nargs=argparse.REMAINDER, default=[], help="taskwarrior tokens")
     modify_parser.set_defaults(func=_handle_modify)
 
     do_parser = subparsers.add_parser("do")
     do_parser.add_argument("--env", dest="env", help="env name")
-    do_parser.add_argument("uids", help="comma-separated task identifiers")
     do_parser.set_defaults(func=_handle_do)
 
     delete_parser = subparsers.add_parser("del")
     delete_parser.add_argument("--env", dest="env", help="env name")
-    delete_parser.add_argument("uids", help="comma-separated task identifiers")
     delete_parser.set_defaults(func=_handle_delete)
 
     list_parser = subparsers.add_parser("list")
@@ -485,8 +537,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    input_args = list(argv if argv is not None else sys.argv[1:])
+    filter_raw, command_tokens = _split_filter_and_command(input_args)
     parser = _build_parser()
-    args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    args = parser.parse_args(command_tokens)
+    args.filter_indices = _parse_filter_indices(filter_raw)
     handler = getattr(args, "func", None)
     if handler is None:
         parser.print_help()

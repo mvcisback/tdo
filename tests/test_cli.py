@@ -138,11 +138,16 @@ def test_modify_command_accepts_summary_patch() -> None:
     assert DummyClient.last_patch.priority == 9
 
 
-def test_delete_command_accepts_multiple() -> None:
-    exit_code, stdout = run_cli(["del", "one,two"])
+def test_delete_command_accepts_filter_indices() -> None:
+    DummyClient.list_entries = [
+        Task(uid="first", summary="Alpha", due=None, priority=1),
+        Task(uid="second", summary="Bravo", due=None, priority=1),
+        Task(uid="third", summary="Charlie", due=None, priority=1),
+    ]
+    exit_code, stdout = run_cli(["1,3", "del"])
     assert exit_code == 0
     assert "deleted 2 tasks" in stdout
-    assert DummyClient.deleted == ["one", "two"]
+    assert DummyClient.deleted == ["first", "third"]
 
 
 def test_delete_command_accepts_numeric_identifiers() -> None:
@@ -150,7 +155,7 @@ def test_delete_command_accepts_numeric_identifiers() -> None:
         Task(uid="first", summary="First", due=None, priority=1),
         Task(uid="second", summary="Second", due=None, priority=2),
     ]
-    exit_code, stdout = run_cli(["del", "1"])
+    exit_code, stdout = run_cli(["1", "del"])
     assert exit_code == 0
     assert DummyClient.deleted == ["first"]
 
@@ -164,12 +169,29 @@ def test_list_command_outputs_tasks() -> None:
     assert "list-task" not in stdout
 
 
+def test_default_command_is_list() -> None:
+    exit_code, stdout = run_cli([])
+    assert exit_code == 0
+    assert "List task" in stdout
+
+
+def test_filter_indices_default_to_list_command() -> None:
+    DummyClient.list_entries = [
+        Task(uid="first", summary="Alpha", due=None, priority=1),
+        Task(uid="second", summary="Bravo", due=None, priority=2),
+    ]
+    exit_code, stdout = run_cli(["2"])
+    assert exit_code == 0
+    assert "Bravo" in stdout
+    assert "Alpha" not in stdout
+
+
 def test_modify_command_accepts_numeric_identifier() -> None:
     DummyClient.list_entries = [
         Task(uid="first", summary="First", due=None, priority=1),
         Task(uid="second", summary="Second", due=None, priority=2),
     ]
-    exit_code, stdout = run_cli(["modify", "1", "summary:Updated"])
+    exit_code, stdout = run_cli(["1", "modify", "summary:Updated"])
     assert exit_code == 0
     assert DummyClient.last_modified_uid == "first"
 
