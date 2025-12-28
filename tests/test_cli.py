@@ -1,17 +1,25 @@
 from __future__ import annotations
 
+import io
+from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 from todo import cli
 from todo.config import CaldavConfig
 from todo.models import Task, TaskPatch, TaskPayload
 
 
-runner = CliRunner()
+def run_cli(arguments: list[str]) -> tuple[int, str]:
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        try:
+            exit_code = cli.main(arguments)
+        except SystemExit as exc:
+            exit_code = exc.code or 0
+    return exit_code, buffer.getvalue()
 
 
 class DummyClient:
@@ -93,17 +101,16 @@ def stub_cal_dav(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_add_command_parses_tokens() -> None:
-    result = runner.invoke(cli.app, ["add", "Create", "pri:H", "x:X-TEST:value"])
-    assert result.exit_code == 0
-    assert "dummy-task" in result.stdout
+    exit_code, stdout = run_cli(["add", "Create", "pri:H", "x:X-TEST:value"])
+    assert exit_code == 0
+    assert "dummy-task" in stdout
     assert DummyClient.last_payload is not None
     assert DummyClient.last_payload.priority == 1
     assert DummyClient.last_payload.x_properties == {"X-TEST": "value"}
 
 
 def test_add_command_parses_tags_and_project() -> None:
-    result = runner.invoke(
-        cli.app,
+    exit_code, stdout = run_cli(
         [
             "add",
             "Tagged",
@@ -111,9 +118,9 @@ def test_add_command_parses_tags_and_project() -> None:
             "+tag2",
             "project:work",
             "due:2025-01-01T03:00:00",
-        ],
+        ]
     )
-    assert result.exit_code == 0
+    assert exit_code == 0
     payload = DummyClient.last_payload
     assert payload is not None
     assert payload.x_properties.get("X-PROJECT") == "work"
@@ -124,17 +131,17 @@ def test_add_command_parses_tags_and_project() -> None:
 
 
 def test_modify_command_accepts_summary_patch() -> None:
-    result = runner.invoke(cli.app, ["modify", "existing", "summary:Updated", "pri:L"])
-    assert result.exit_code == 0
+    exit_code, stdout = run_cli(["modify", "existing", "summary:Updated", "pri:L"])
+    assert exit_code == 0
     assert DummyClient.last_patch is not None
     assert DummyClient.last_patch.summary == "Updated"
     assert DummyClient.last_patch.priority == 9
 
 
 def test_delete_command_accepts_multiple() -> None:
-    result = runner.invoke(cli.app, ["del", "one,two"])
-    assert result.exit_code == 0
-    assert "deleted 2 tasks" in result.stdout
+    exit_code, stdout = run_cli(["del", "one,two"])
+    assert exit_code == 0
+    assert "deleted 2 tasks" in stdout
     assert DummyClient.deleted == ["one", "two"]
 
 
@@ -143,18 +150,18 @@ def test_delete_command_accepts_numeric_identifiers() -> None:
         Task(uid="first", summary="First", due=None, priority=1),
         Task(uid="second", summary="Second", due=None, priority=2),
     ]
-    result = runner.invoke(cli.app, ["del", "1"])
-    assert result.exit_code == 0
+    exit_code, stdout = run_cli(["del", "1"])
+    assert exit_code == 0
     assert DummyClient.deleted == ["first"]
 
 
 def test_list_command_outputs_tasks() -> None:
-    result = runner.invoke(cli.app, ["list"])
-    assert result.exit_code == 0
-    assert "Project" in result.stdout
-    assert "Description" in result.stdout
-    assert "List task" in result.stdout
-    assert "list-task" not in result.stdout
+    exit_code, stdout = run_cli(["list"])
+    assert exit_code == 0
+    assert "Project" in stdout
+    assert "Description" in stdout
+    assert "List task" in stdout
+    assert "list-task" not in stdout
 
 
 def test_modify_command_accepts_numeric_identifier() -> None:
@@ -162,8 +169,8 @@ def test_modify_command_accepts_numeric_identifier() -> None:
         Task(uid="first", summary="First", due=None, priority=1),
         Task(uid="second", summary="Second", due=None, priority=2),
     ]
-    result = runner.invoke(cli.app, ["modify", "1", "summary:Updated"])
-    assert result.exit_code == 0
+    exit_code, stdout = run_cli(["modify", "1", "summary:Updated"])
+    assert exit_code == 0
     assert DummyClient.last_modified_uid == "first"
 
 
@@ -182,8 +189,8 @@ def test_list_command_shows_uids_when_enabled(tmp_path, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(cli, "load_config_from_path", fake_load)
     monkeypatch.setenv("TODO_CONFIG_FILE", str(config_path))
-    result = runner.invoke(cli.app, ["list"])
-    assert result.exit_code == 0
+    exit_code, stdout = run_cli(["list"])
+    assert exit_code == 0
 
 
 def test_list_command_accepts_config_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,15 +206,14 @@ def test_list_command_accepts_config_file(tmp_path, monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(cli, "load_config_from_path", fake_load)
     monkeypatch.setenv("TODO_CONFIG_FILE", str(config_path))
-    result = runner.invoke(cli.app, ["list"])
-    assert result.exit_code == 0
+    exit_code, stdout = run_cli(["list"])
+    assert exit_code == 0
     assert called
     assert called[-1] == config_path
 
 
 def test_config_init_command_writes_file(tmp_path) -> None:
-    result = runner.invoke(
-        cli.app,
+    exit_code, stdout = run_cli(
         [
             "config",
             "init",
@@ -224,9 +230,9 @@ def test_config_init_command_writes_file(tmp_path) -> None:
             "--token",
             "tok",
             "--force",
-        ],
+        ]
     )
-    assert result.exit_code == 0
+    assert exit_code == 0
     target = tmp_path / "config.test.toml"
     assert target.exists()
     contents = target.read_text()

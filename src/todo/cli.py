@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import argparse
 import os
 import sys
 from datetime import datetime, timedelta
@@ -14,16 +15,19 @@ from rich.console import Console
 from rich.table import Table
 
 from .caldav_client import CalDAVClient
-from .config import CaldavConfig, config_file_path, load_config, load_config_from_path, write_config_file
+from .config import (
+    CaldavConfig,
+    config_file_path,
+    load_config,
+    load_config_from_path,
+    write_config_file,
+)
 from .models import Task, TaskPatch, TaskPayload
 from .time_parser import parse_due_value, parse_wait_value
 from .update_parser import UpdateDescriptor, parse_update
 
 
 T = TypeVar("T")
-app = typer.Typer()
-config_app = typer.Typer(help="Manage CalDAV configuration.")
-app.add_typer(config_app, name="config")
 _CLIENT_FACTORY: type[CalDAVClient] = CalDAVClient
 
 
@@ -322,34 +326,30 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
     console.print(table)
 
 
-@app.command()
-def add(
-    description: str,
-    env: str | None = typer.Option(None, "--env", help="env name"),
-    tokens: list[str] | None = typer.Argument(None),
-):
-    descriptor = _parse_update_descriptor(tokens or ())
-    metadata = _parse_metadata(tokens or ())
-    payload = _build_payload(description, descriptor, metadata)
-    created = _run_with_client(env, lambda client: client.create_task(payload))
+def _normalize_tokens(tokens: Sequence[str] | None) -> list[str]:
+    return [token for token in tokens or [] if token != "--"]
+
+
+def _handle_add(args: argparse.Namespace) -> None:
+    tokens = _normalize_tokens(args.tokens)
+    descriptor = _parse_update_descriptor(tokens)
+    metadata = _parse_metadata(tokens)
+    payload = _build_payload(args.description, descriptor, metadata)
+    created = _run_with_client(args.env, lambda client: client.create_task(payload))
     typer.echo(created.uid)
 
 
-@app.command()
-def modify(
-    uid: str,
-    env: str | None = typer.Option(None, "--env", help="env name"),
-    tokens: list[str] | None = typer.Argument(None),
-):
-    descriptor = _parse_update_descriptor(tokens or ())
-    metadata = _parse_metadata(tokens or ())
+def _handle_modify(args: argparse.Namespace) -> None:
+    tokens = _normalize_tokens(args.tokens)
+    descriptor = _parse_update_descriptor(tokens)
+    metadata = _parse_metadata(tokens)
     if not _has_update_candidates(descriptor, metadata):
         typer.echo("no changes provided")
         raise typer.Exit(code=1)
 
     def callback(client: CalDAVClient) -> Task:
         tasks = _sorted_tasks(client)
-        target_uid = _resolve_task_identifier(client, uid, tasks)
+        target_uid = _resolve_task_identifier(client, args.uid, tasks)
         existing = next((task for task in tasks if task.uid == target_uid), None)
         if existing is None:
             existing = Task(uid=target_uid, summary=target_uid, due=None, priority=None)
@@ -359,22 +359,17 @@ def modify(
             raise typer.Exit(code=1)
         return client.modify_task(target_uid, patch)
 
-    updated = _run_with_client(env, callback)
+    updated = _run_with_client(args.env, callback)
     typer.echo(updated.uid)
 
 
-@app.command()
-def do(
-    uids: str,
-    env: str | None = typer.Option(None, "--env", help="env name"),
-):
-    targets = [token.strip() for token in uids.split(",") if token.strip()]
+def _handle_do(args: argparse.Namespace) -> None:
+    targets = [token.strip() for token in args.uids.split(",") if token.strip()]
     if not targets:
         typer.echo("no targets provided")
         raise typer.Exit(code=1)
-    
     patch = TaskPatch(status="COMPLETED")
-    
+
     def mark_done_many(client: CalDAVClient) -> list[str]:
         completed: list[str] = []
         for target in targets:
@@ -382,58 +377,38 @@ def do(
             client.modify_task(resolved_uid, patch)
             completed.append(resolved_uid)
         return completed
-    
-    completed = _run_with_client(env, mark_done_many)
+
+    completed = _run_with_client(args.env, mark_done_many)
     typer.echo(f"marked {len(completed)} tasks as done")
 
 
-@app.command(name="del")
-def delete(
-    uids: str,
-    env: str | None = typer.Option(None, "--env", help="env name"),
-):
-    targets = [token.strip() for token in uids.split(",") if token.strip()]
+def _handle_delete(args: argparse.Namespace) -> None:
+    targets = [token.strip() for token in args.uids.split(",") if token.strip()]
     if not targets:
         typer.echo("no targets provided")
         raise typer.Exit(code=1)
     deleted = _run_with_client(
-        env,
+        args.env,
         lambda client: _delete_many(client, _resolve_delete_targets(client, targets)),
     )
     typer.echo(f"deleted {len(deleted)} tasks")
 
 
-@app.command(name="list")
-def list_tasks(
-    env: str | None = typer.Option(None, "--env", help="env name"),
-) -> None:
-    config = _resolve_config(env)
-    tasks = _run_with_client(env, lambda client: client.list_tasks())
+def _handle_list(args: argparse.Namespace) -> None:
+    config = _resolve_config(args.env)
+    tasks = _run_with_client(args.env, lambda client: client.list_tasks())
     if not tasks:
         typer.echo("no tasks found")
         return
     _pretty_print_tasks(tasks, config.show_uids)
 
 
-@config_app.command(name="init")
-def init_config(
-    env: str | None = typer.Option(None, "--env", help="environment name"),
-    config_home: Path | None = typer.Option(
-        None,
-        "--config-home",
-        help="override the config directory",
-    ),
-    calendar_url: str | None = typer.Option(None, "--calendar-url", help="CalDAV calendar URL"),
-    username: str | None = typer.Option(None, "--username", help="CalDAV username"),
-    password: str | None = typer.Option(None, "--password", help="CalDAV password"),
-    token: str | None = typer.Option(None, "--token", help="CalDAV token"),
-    force: bool = typer.Option(False, "--force", "-f", help="overwrite existing config"),
-) -> None:
-    target = config_file_path(env, config_home)
-    calendar_url_value = _require_value(calendar_url, "CalDAV calendar URL")
-    username_value = _require_value(username, "CalDAV username")
-    password_value = password if password else None
-    token_value = token if token else None
+def _handle_config_init(args: argparse.Namespace) -> None:
+    target = config_file_path(args.env, args.config_home)
+    calendar_url_value = _require_value(args.calendar_url, "CalDAV calendar URL")
+    username_value = _require_value(args.username, "CalDAV username")
+    password_value = args.password if args.password else None
+    token_value = args.token if args.token else None
     config = CaldavConfig(
         calendar_url=calendar_url_value,
         username=username_value,
@@ -441,8 +416,80 @@ def init_config(
         token=token_value,
     )
     try:
-        path = write_config_file(target, config, force=force)
+        path = write_config_file(target, config, force=args.force)
     except FileExistsError:
         typer.echo(f"{target} already exists; use --force to overwrite")
         raise typer.Exit(code=1)
     typer.echo(f"created config file at {path}")
+
+
+def _handle_config_help(args: argparse.Namespace) -> None:
+    parser = getattr(args, "parser", None)
+    if parser:
+        parser.print_help()
+    else:
+        typer.echo("config command requires a subcommand")
+        raise typer.Exit(code=1)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="todo")
+    subparsers = parser.add_subparsers(dest="command")
+
+    add_parser = subparsers.add_parser("add")
+    add_parser.add_argument("--env", dest="env", help="env name")
+    add_parser.add_argument("description", help="task description")
+    add_parser.add_argument("tokens", nargs=argparse.REMAINDER, default=[], help="taskwarrior tokens")
+    add_parser.set_defaults(func=_handle_add)
+
+    modify_parser = subparsers.add_parser("modify")
+    modify_parser.add_argument("--env", dest="env", help="env name")
+    modify_parser.add_argument("uid", help="task identifier")
+    modify_parser.add_argument("tokens", nargs=argparse.REMAINDER, default=[], help="taskwarrior tokens")
+    modify_parser.set_defaults(func=_handle_modify)
+
+    do_parser = subparsers.add_parser("do")
+    do_parser.add_argument("--env", dest="env", help="env name")
+    do_parser.add_argument("uids", help="comma-separated task identifiers")
+    do_parser.set_defaults(func=_handle_do)
+
+    delete_parser = subparsers.add_parser("del")
+    delete_parser.add_argument("--env", dest="env", help="env name")
+    delete_parser.add_argument("uids", help="comma-separated task identifiers")
+    delete_parser.set_defaults(func=_handle_delete)
+
+    list_parser = subparsers.add_parser("list")
+    list_parser.add_argument("--env", dest="env", help="env name")
+    list_parser.set_defaults(func=_handle_list)
+
+    config_parser = subparsers.add_parser("config")
+    config_parser.set_defaults(func=_handle_config_help, parser=config_parser)
+    config_subparsers = config_parser.add_subparsers(dest="subcommand")
+    init_parser = config_subparsers.add_parser("init")
+    init_parser.add_argument("--env", dest="env", help="environment name")
+    init_parser.add_argument(
+        "--config-home",
+        dest="config_home",
+        type=Path,
+        default=None,
+        help="override the config directory",
+    )
+    init_parser.add_argument("--calendar-url", dest="calendar_url", help="CalDAV calendar URL")
+    init_parser.add_argument("--username", dest="username", help="CalDAV username")
+    init_parser.add_argument("--password", dest="password", help="CalDAV password")
+    init_parser.add_argument("--token", dest="token", help="CalDAV token")
+    init_parser.add_argument("--force", dest="force", action="store_true", help="overwrite existing config")
+    init_parser.set_defaults(func=_handle_config_init, parser=config_parser)
+
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    handler = getattr(args, "func", None)
+    if handler is None:
+        parser.print_help()
+        return 0
+    handler(args)
+    return 0

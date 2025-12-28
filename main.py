@@ -1,8 +1,12 @@
-from todo.cli import app
+from __future__ import annotations
+
+import sys
+
+from todo import cli
 
 
 def main() -> None:
-    app()
+    sys.exit(cli.main())
 
 
 if __name__ == "__main__":
