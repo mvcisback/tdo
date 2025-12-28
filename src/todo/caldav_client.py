@@ -57,6 +57,7 @@ class CalDAVClient:
             payload.due,
             payload.priority,
             payload.x_properties,
+            payload.categories,
             uid,
             payload.status,
         )
@@ -75,10 +76,22 @@ class CalDAVClient:
         status = patch.status or existing.status
         x_properties = dict(existing.x_properties)
         x_properties.update(patch.x_properties)
-        body = self._build_ics(summary, due, priority, x_properties, uid, status)
+        if patch.categories is not None:
+            categories = list(patch.categories)
+        else:
+            categories = list(existing.categories)
+        body = self._build_ics(summary, due, priority, x_properties, categories, uid, status)
         todo.data = body
         todo.save()
-        return Task(uid=uid, summary=summary, status=status, due=due, priority=priority, x_properties=x_properties)
+        return Task(
+            uid=uid,
+            summary=summary,
+            status=status,
+            due=due,
+            priority=priority,
+            x_properties=x_properties,
+            categories=categories,
+        )
 
     def delete_task(self, uid: str) -> str:
         calendar = self._ensure_calendar()
@@ -99,6 +112,7 @@ class CalDAVClient:
         due: datetime | None,
         priority: int | None,
         x_properties: Dict[str, str],
+        categories: list[str] | None,
         uid: str,
         status: str | None,
     ) -> str:
@@ -116,6 +130,8 @@ class CalDAVClient:
             lines.append(f"PRIORITY:{priority}")
         if due is not None:
             lines.append(f"DUE:{self._format_due(due)}")
+        if categories:
+            lines.append(f"CATEGORIES:{','.join(categories)}")
         for name, value in x_properties.items():
             lines.append(f"{name}:{value}")
         lines.extend(["END:VTODO", "END:VCALENDAR"])
@@ -131,6 +147,7 @@ class CalDAVClient:
         status: str | None = None
         x_properties: Dict[str, str] = {}
         uid = ""
+        categories: list[str] = []
         for raw in data.splitlines():
             line = raw.strip()
             if not line or ":" not in line:
@@ -149,6 +166,8 @@ class CalDAVClient:
                     pass
             elif key == "STATUS":
                 status = value
+            elif key == "CATEGORIES":
+                categories.extend(self._split_categories(value))
             elif key.startswith("X-"):
                 x_properties[key] = value
         return Task(
@@ -158,6 +177,7 @@ class CalDAVClient:
             due=due,
             priority=priority,
             x_properties=x_properties,
+            categories=categories,
         )
 
     def _parse_due(self, raw: str) -> datetime | None:
@@ -167,6 +187,9 @@ class CalDAVClient:
             return datetime.strptime(raw, "%Y%m%dT%H%M%S")
         except ValueError:
             return None
+
+    def _split_categories(self, raw: str) -> list[str]:
+        return [candidate.strip() for candidate in raw.split(",") if candidate.strip()]
 
     def _extract_summary(self, data: str) -> str | None:
         for raw in data.splitlines():

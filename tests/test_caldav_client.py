@@ -19,6 +19,7 @@ def test_build_ics_includes_priority_due_and_x_props() -> None:
         due,
         2,
         {"X-TEST": "value"},
+        None,
         "uid-42",
         None,
     )
@@ -42,6 +43,7 @@ def test_task_from_data_parses_fields() -> None:
         datetime(2025, 2, 3, 4, 5, 6),
         4,
         {"X-ORG": "dev"},
+        ["plan", "review"],
         "task-100",
         None,
     )
@@ -51,6 +53,7 @@ def test_task_from_data_parses_fields() -> None:
     assert task.priority == 4
     assert task.x_properties.get("X-ORG") == "dev"
     assert task.due == datetime(2025, 2, 3, 4, 5, 6)
+    assert task.categories == ["plan", "review"]
 
 
 def test_ensure_calendar_raises_when_not_initialized() -> None:

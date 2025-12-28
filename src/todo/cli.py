@@ -6,9 +6,8 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Sequence, TypeVar
+from typing import Callable, NoReturn, Sequence, TypeVar
 
-import typer
 from parsimonious.exceptions import ParseError
 from rich import box
 from rich.console import Console
@@ -52,25 +51,24 @@ class UpdateMetadata:
     x_properties: dict[str, str] = field(default_factory=dict)
 
 
-def _merge_tags(existing: str | None, additions: Sequence[str]) -> str | None:
-    normalized: list[str] = []
-    if existing:
-        normalized.extend(tag.strip() for tag in existing.split(",") if tag.strip())
-    for addition in additions:
-        candidate = addition.strip()
-        if candidate and candidate not in normalized:
-            normalized.append(candidate)
-    return ",".join(normalized) if normalized else None
+def _split_categories_value(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [segment.strip() for segment in raw.split(",") if segment.strip()]
+
+
+def _exit_with_message(message: str) -> NoReturn:
+    print(message)
+    raise SystemExit(1)
 
 
 def _require_value(value: str | None, prompt_text: str) -> str:
     candidate = (value or "").strip()
     if candidate:
         return candidate
-    response = typer.prompt(prompt_text).strip()
+    response = input(prompt_text).strip()
     if not response:
-        typer.echo(f"{prompt_text} is required")
-        raise typer.Exit(code=1)
+        _exit_with_message(f"{prompt_text} is required")
     return response
 
 
@@ -120,8 +118,7 @@ def _parse_update_descriptor(tokens: Sequence[str]) -> UpdateDescriptor:
     try:
         return parse_update(raw)
     except ParseError as exc:
-        typer.echo(f"unable to parse update arguments: {exc}")
-        raise typer.Exit(code=1)
+        _exit_with_message(f"unable to parse update arguments: {exc}")
 
 
 def _resolve_due_value(raw: str | None) -> datetime | None:
@@ -133,13 +130,15 @@ def _resolve_due_value(raw: str | None) -> datetime | None:
     return resolved.to("UTC").naive
 
 
-def _apply_tag_changes(existing: str | None, descriptor: UpdateDescriptor) -> str | None:
+def _apply_tag_changes(existing: Sequence[str] | None, descriptor: UpdateDescriptor) -> list[str] | None:
     if not descriptor.add_tags and not descriptor.remove_tags:
         return None
-    normalized = {tag.strip() for tag in (existing or "").split(",") if tag.strip()}
-    normalized.update(descriptor.add_tags)
-    normalized.difference_update(descriptor.remove_tags)
-    return ",".join(sorted(normalized))
+    normalized = {tag.strip() for tag in existing or [] if tag.strip()}
+    additions = {tag.strip() for tag in descriptor.add_tags if tag.strip()}
+    removals = {tag.strip() for tag in descriptor.remove_tags if tag.strip()}
+    normalized.update(additions)
+    normalized.difference_update(removals)
+    return sorted(normalized)
 
 
 def _has_update_candidates(descriptor: UpdateDescriptor, metadata: UpdateMetadata) -> bool:
@@ -160,12 +159,16 @@ def _build_payload(description: str, descriptor: UpdateDescriptor, metadata: Upd
     summary = metadata.summary or description
     due = _resolve_due_value(descriptor.due)
     x_properties = dict(metadata.x_properties)
+    raw_categories = x_properties.pop("CATEGORIES", None)
+    metadata_categories = _split_categories_value(raw_categories)
+    base_categories = metadata_categories if raw_categories is not None else None
+    tags_value = _apply_tag_changes(base_categories, descriptor)
+    if tags_value is not None:
+        categories = tags_value
+    else:
+        categories = base_categories
     if descriptor.project:
         x_properties["X-PROJECT"] = descriptor.project
-    if descriptor.add_tags:
-        merged_tags = _merge_tags(x_properties.get("X-TAGS"), tuple(descriptor.add_tags))
-        if merged_tags:
-            x_properties["X-TAGS"] = merged_tags
     if descriptor.wait:
         wait_value = descriptor.wait.strip()
         if wait_value:
@@ -176,6 +179,7 @@ def _build_payload(description: str, descriptor: UpdateDescriptor, metadata: Upd
         due=due,
         status=metadata.status or "IN-PROCESS",
         x_properties=x_properties,
+        categories=categories if categories else None,
     )
 
 
@@ -190,18 +194,22 @@ def _build_patch_from_descriptor(
         status=metadata.status,
     )
     x_properties = dict(metadata.x_properties)
+    raw_categories = x_properties.pop("CATEGORIES", None)
+    metadata_categories = _split_categories_value(raw_categories)
+    metadata_provided = raw_categories is not None
+    existing_categories = existing.categories if existing else None
+    base_categories = metadata_categories if metadata_provided else existing_categories
+    tags_value = _apply_tag_changes(base_categories, descriptor)
+    if tags_value is not None:
+        patch.categories = tags_value
+    elif metadata_provided:
+        patch.categories = metadata_categories
     if descriptor.project:
         x_properties["X-PROJECT"] = descriptor.project
     if descriptor.wait:
         wait_value = descriptor.wait.strip()
         if wait_value and parse_wait_value(wait_value) is not None:
             x_properties["X-WAIT"] = wait_value
-    tags_value = _apply_tag_changes(existing.x_properties.get("X-TAGS") if existing else None, descriptor)
-    if tags_value is not None:
-        if tags_value:
-            x_properties["X-TAGS"] = tags_value
-        else:
-            x_properties.pop("X-TAGS", None)
     patch.x_properties = x_properties
     return patch
 
@@ -251,9 +259,8 @@ def _format_project(task: Task) -> str:
 
 
 def _format_tag(task: Task) -> str:
-    tags = task.x_properties.get("X-TAGS")
-    if tags:
-        return tags
+    if task.categories:
+        return ",".join(task.categories)
     tag = task.x_properties.get("X-TAG") or task.x_properties.get("X-COLOR")
     return tag or "-"
 
@@ -333,8 +340,7 @@ def _parse_filter_indices(raw: str | None) -> list[str] | None:
     normalized = [token for token in tokens if token]
     for token in normalized:
         if not token.isdigit():
-            typer.echo(f"invalid filter token: {token}")
-            raise typer.Exit(code=1)
+            _exit_with_message(f"invalid filter token: {token}")
     return normalized
 
 
@@ -355,8 +361,7 @@ def _select_tasks_for_filter(tasks: list[Task], indices: list[str]) -> list[Task
     for token in indices:
         task = index_map.get(token)
         if task is None:
-            typer.echo(f"filter {token} did not match any task")
-            raise typer.Exit(code=1)
+            _exit_with_message(f"filter {token} did not match any task")
         selected.append(task)
     return selected
 
@@ -371,7 +376,7 @@ def _handle_add(args: argparse.Namespace) -> None:
     metadata = _parse_metadata(tokens)
     payload = _build_payload(args.description, descriptor, metadata)
     created = _run_with_client(args.env, lambda client: client.create_task(payload))
-    typer.echo(created.uid)
+    print(created.uid)
 
 
 def _handle_modify(args: argparse.Namespace) -> None:
@@ -379,8 +384,7 @@ def _handle_modify(args: argparse.Namespace) -> None:
     descriptor = _parse_update_descriptor(tokens)
     metadata = _parse_metadata(tokens)
     if not _has_update_candidates(descriptor, metadata):
-        typer.echo("no changes provided")
-        raise typer.Exit(code=1)
+        _exit_with_message("no changes provided")
 
     def callback(client: CalDAVClient) -> int:
         tasks = _select_tasks_for_filter(
@@ -388,8 +392,7 @@ def _handle_modify(args: argparse.Namespace) -> None:
             _effective_filter_indices(args.filter_indices),
         )
         if not tasks:
-            typer.echo("no tasks match filter")
-            raise typer.Exit(code=1)
+            _exit_with_message("no tasks match filter")
         modified = 0
         for task in tasks:
             patch = _build_patch_from_descriptor(descriptor, metadata, task)
@@ -398,12 +401,11 @@ def _handle_modify(args: argparse.Namespace) -> None:
             client.modify_task(task.uid, patch)
             modified += 1
         if modified == 0:
-            typer.echo("no changes provided")
-            raise typer.Exit(code=1)
+            _exit_with_message("no changes provided")
         return modified
 
     modified_count = _run_with_client(args.env, callback)
-    typer.echo(f"modified {modified_count} tasks")
+    print(f"modified {modified_count} tasks")
 
 
 def _handle_do(args: argparse.Namespace) -> None:
@@ -415,8 +417,7 @@ def _handle_do(args: argparse.Namespace) -> None:
             _effective_filter_indices(args.filter_indices),
         )
         if not tasks:
-            typer.echo("no tasks match filter")
-            raise typer.Exit(code=1)
+            _exit_with_message("no tasks match filter")
         completed: list[str] = []
         for task in tasks:
             client.modify_task(task.uid, patch)
@@ -424,7 +425,7 @@ def _handle_do(args: argparse.Namespace) -> None:
         return completed
 
     completed = _run_with_client(args.env, mark_done_many)
-    typer.echo(f"marked {len(completed)} tasks as done")
+    print(f"marked {len(completed)} tasks as done")
 
 
 def _handle_delete(args: argparse.Namespace) -> None:
@@ -434,26 +435,25 @@ def _handle_delete(args: argparse.Namespace) -> None:
             _effective_filter_indices(args.filter_indices),
         )
         if not tasks:
-            typer.echo("no tasks match filter")
-            raise typer.Exit(code=1)
+            _exit_with_message("no tasks match filter")
         return _delete_many(client, [task.uid for task in tasks])
 
     deleted = _run_with_client(args.env, callback)
-    typer.echo(f"deleted {len(deleted)} tasks")
+    print(f"deleted {len(deleted)} tasks")
 
 
 def _handle_list(args: argparse.Namespace) -> None:
     config = _resolve_config(args.env)
     tasks = _run_with_client(args.env, lambda client: client.list_tasks())
     if not tasks:
-        typer.echo("no tasks found")
+        print("no tasks found")
         return
     filtered_tasks = _select_tasks_for_filter(
         tasks,
         _effective_filter_indices(args.filter_indices),
     )
     if not filtered_tasks:
-        typer.echo("no tasks match filter")
+        print("no tasks match filter")
         return
     _pretty_print_tasks(filtered_tasks, config.show_uids)
 
@@ -473,9 +473,8 @@ def _handle_config_init(args: argparse.Namespace) -> None:
     try:
         path = write_config_file(target, config, force=args.force)
     except FileExistsError:
-        typer.echo(f"{target} already exists; use --force to overwrite")
-        raise typer.Exit(code=1)
-    typer.echo(f"created config file at {path}")
+        _exit_with_message(f"{target} already exists; use --force to overwrite")
+    print(f"created config file at {path}")
 
 
 def _handle_config_help(args: argparse.Namespace) -> None:
@@ -483,8 +482,7 @@ def _handle_config_help(args: argparse.Namespace) -> None:
     if parser:
         parser.print_help()
     else:
-        typer.echo("config command requires a subcommand")
-        raise typer.Exit(code=1)
+        _exit_with_message("config command requires a subcommand")
 
 
 def _build_parser() -> argparse.ArgumentParser:

@@ -57,6 +57,7 @@ class DummyClient:
             due=payload.due,
             priority=payload.priority,
             x_properties=payload.x_properties,
+            categories=list(payload.categories or []),
         )
 
     def modify_task(self, uid: str, patch: TaskPatch) -> Task:
@@ -68,6 +69,7 @@ class DummyClient:
             due=patch.due,
             priority=patch.priority,
             x_properties=patch.x_properties,
+            categories=list(patch.categories or []),
         )
 
     def delete_task(self, uid: str) -> str:
@@ -124,9 +126,8 @@ def test_add_command_parses_tags_and_project() -> None:
     payload = DummyClient.last_payload
     assert payload is not None
     assert payload.x_properties.get("X-PROJECT") == "work"
-    tags = payload.x_properties.get("X-TAGS")
-    assert tags is not None
-    assert set(tags.split(",")) == {"tag1", "tag2"}
+    assert payload.categories
+    assert set(payload.categories) == {"tag1", "tag2"}
     assert payload.due == datetime(2025, 1, 1, 3, 0, 0)
 
 
@@ -136,6 +137,14 @@ def test_modify_command_accepts_summary_patch() -> None:
     assert DummyClient.last_patch is not None
     assert DummyClient.last_patch.summary == "Updated"
     assert DummyClient.last_patch.priority == 9
+
+
+def test_modify_command_adds_tag_without_other_changes() -> None:
+    exit_code, stdout = run_cli(["1", "modify", "+foo2"])
+    assert exit_code == 0
+    assert "modified 1 tasks" in stdout
+    assert DummyClient.last_patch is not None
+    assert DummyClient.last_patch.categories == ["foo2"]
 
 
 def test_delete_command_accepts_filter_indices() -> None:
