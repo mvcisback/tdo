@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict
+import json
+import os
+from pathlib import Path
+from typing import Any, Dict, Sequence
 from uuid import uuid4
 
 from caldav import DAVClient, Calendar
+from caldav.objects import CalendarObjectResource
 
 from .config import CaldavConfig
 from .models import Task, TaskPatch, TaskPayload
@@ -14,8 +18,10 @@ from .models import Task, TaskPatch, TaskPayload
 @dataclass
 class CalDAVClient:
     config: CaldavConfig
+    cache_path: Path | None = field(default=None)
     client: DAVClient | None = field(default=None, init=False)
     calendar: Calendar | None = field(default=None, init=False)
+    _cached_tasks: list[Task] | None = field(default=None, init=False)
 
     def __enter__(self) -> CalDAVClient:
         self.client = DAVClient(
@@ -45,9 +51,18 @@ class CalDAVClient:
         self.client = None
         self.calendar = None
 
-    def list_tasks(self) -> list[Task]:
-        calendar = self._ensure_calendar()
-        return [self._task_from_data(todo.data) for todo in calendar.todos()]
+    def list_tasks(self, force_refresh: bool = False) -> list[Task]:
+        if not force_refresh and self._cached_tasks is not None:
+            return list(self._cached_tasks)
+        if not force_refresh:
+            cached = self._read_cache()
+            if cached is not None:
+                self._cached_tasks = cached
+                return list(cached)
+        tasks = self._fetch_tasks()
+        self._cached_tasks = tasks
+        self._write_cache(tasks)
+        return list(tasks)
 
     def create_task(self, payload: TaskPayload) -> Task:
         calendar = self._ensure_calendar()
@@ -62,36 +77,43 @@ class CalDAVClient:
             payload.status,
         )
         todo = calendar.add_todo(body)
-        return self._task_from_data(todo.data)
+        created = self._task_from_resource(todo)
+        self._invalidate_cache()
+        return created
 
-    def modify_task(self, uid: str, patch: TaskPatch) -> Task:
+    def modify_task(self, task: Task, patch: TaskPatch) -> Task:
         calendar = self._ensure_calendar()
-        todo = calendar.todo_by_uid(uid)
-        if todo is None:
-            raise KeyError(f"todo {uid} not found")
-        existing = self._task_from_data(todo.data)
-        summary = patch.summary or existing.summary or uid
-        due = patch.due if patch.due is not None else existing.due
-        priority = patch.priority if patch.priority is not None else existing.priority
-        status = patch.status or existing.status
-        x_properties = dict(existing.x_properties)
+        if not task.href:
+            raise KeyError(f"task {task.uid} missing href")
+        summary = patch.summary or task.summary or task.uid
+        due = patch.due if patch.due is not None else task.due
+        priority = patch.priority if patch.priority is not None else task.priority
+        status = patch.status or task.status
+        x_properties = dict(task.x_properties)
         x_properties.update(patch.x_properties)
-        if patch.categories is not None:
-            categories = list(patch.categories)
-        else:
-            categories = list(existing.categories)
-        body = self._build_ics(summary, due, priority, x_properties, categories, uid, status)
-        todo.data = body
-        todo.save()
-        return Task(
-            uid=uid,
+        categories = patch.categories if patch.categories is not None else task.categories
+        categories = list(categories)
+        body = self._build_ics(summary, due, priority, x_properties, categories, task.uid, status)
+        resource = CalendarObjectResource(
+            client=self.client,
+            url=task.href,
+            parent=calendar,
+        )
+        resource.id = task.uid
+        resource.data = body
+        resource.save()
+        updated = Task(
+            uid=task.uid,
             summary=summary,
             status=status,
             due=due,
             priority=priority,
             x_properties=x_properties,
             categories=categories,
+            href=task.href,
         )
+        self._invalidate_cache()
+        return updated
 
     def delete_task(self, uid: str) -> str:
         calendar = self._ensure_calendar()
@@ -99,12 +121,23 @@ class CalDAVClient:
         if todo is None:
             raise KeyError(f"todo {uid} not found")
         todo.delete()
+        self._invalidate_cache()
         return uid
 
     def _ensure_calendar(self) -> Calendar:
         if self.calendar is None:
             raise RuntimeError("caldav client is not initialized")
         return self.calendar
+
+    def _fetch_tasks(self) -> list[Task]:
+        calendar = self._ensure_calendar()
+        return [self._task_from_resource(todo) for todo in calendar.todos()]
+
+    def _task_from_resource(self, resource: CalendarObjectResource) -> Task:
+        task = self._task_from_data(resource.data or "")
+        if resource.url:
+            task.href = str(resource.url)
+        return task
 
     def _build_ics(
         self,
@@ -199,3 +232,78 @@ class CalDAVClient:
 
     def _uid_from_summary(self, summary: str) -> str:
         return f"{summary.replace(' ', '_')}-{uuid4()}"
+
+    def _cache_file_path(self) -> Path | None:
+        if self.cache_path:
+            return self.cache_path
+        override = os.environ.get("TODO_TASK_CACHE_FILE")
+        if override:
+            return Path(override)
+        try:
+            home = Path.home()
+        except OSError:
+            return None
+        return home / ".cache" / "todo" / "tasks.json"
+
+    def _read_cache(self) -> list[Task] | None:
+        path = self._cache_file_path()
+        if path is None or not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        entries = payload.get("tasks")
+        if not isinstance(entries, list):
+            return None
+        tasks: list[Task] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            tasks.append(self._deserialize_task(entry))
+        return tasks if tasks else None
+
+    def _write_cache(self, tasks: Sequence[Task]) -> None:
+        path = self._cache_file_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"tasks": [self._serialize_task(task) for task in tasks]}
+            path.write_text(json.dumps(payload, indent=2))
+        except OSError:
+            return
+
+    def _serialize_task(self, task: Task) -> dict[str, Any]:
+        return {
+            "uid": task.uid,
+            "summary": task.summary,
+            "status": task.status,
+            "due": task.due.isoformat() if task.due else None,
+            "priority": task.priority,
+            "x_properties": task.x_properties,
+            "categories": task.categories,
+            "href": task.href,
+        }
+
+    def _deserialize_task(self, entry: dict[str, Any]) -> Task:
+        due_value = entry.get("due")
+        due: datetime | None = None
+        if isinstance(due_value, str):
+            try:
+                due = datetime.fromisoformat(due_value)
+            except ValueError:
+                pass
+        return Task(
+            uid=str(entry.get("uid") or ""),
+            summary=str(entry.get("summary") or ""),
+            status=str(entry.get("status") or "IN-PROCESS"),
+            due=due,
+            priority=entry.get("priority"),
+            x_properties=dict(entry.get("x_properties") or {}),
+            categories=list(entry.get("categories") or []),
+            href=entry.get("href"),
+        )
+
+    def _invalidate_cache(self) -> None:
+        self._cached_tasks = None

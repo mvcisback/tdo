@@ -60,23 +60,25 @@ class DummyClient:
             categories=list(payload.categories or []),
         )
 
-    def modify_task(self, uid: str, patch: TaskPatch) -> Task:
+    def modify_task(self, task: Task, patch: TaskPatch) -> Task:
         DummyClient.last_patch = patch
-        DummyClient.last_modified_uid = uid
+        DummyClient.last_modified_uid = task.uid
+        categories = list(patch.categories or task.categories)
         return Task(
-            uid=uid,
-            summary=patch.summary or uid,
+            uid=task.uid,
+            summary=patch.summary or task.summary or task.uid,
             due=patch.due,
             priority=patch.priority,
             x_properties=patch.x_properties,
-            categories=list(patch.categories or []),
+            categories=categories,
+            href=task.href,
         )
 
     def delete_task(self, uid: str) -> str:
         DummyClient.deleted.append(uid)
         return uid
 
-    def list_tasks(self) -> list[Task]:
+    def list_tasks(self, force_refresh: bool = False) -> list[Task]:
         return list(DummyClient.list_entries)
 
 

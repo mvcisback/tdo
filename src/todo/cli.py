@@ -222,8 +222,14 @@ def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
     return deleted
 
 
+def _should_force_refresh() -> bool:
+    if os.environ.get("TODO_FORCE_REFRESH") == "1":
+        return True
+    return os.environ.get("TODO_USE_CACHE") != "1"
+
+
 def _sorted_tasks(client: CalDAVClient) -> list[Task]:
-    return sorted(client.list_tasks(), key=_task_sort_key)
+    return sorted(client.list_tasks(force_refresh=_should_force_refresh()), key=_task_sort_key)
 
 
 def _task_sort_key(task: Task) -> tuple[datetime, int, str]:
@@ -398,7 +404,7 @@ def _handle_modify(args: argparse.Namespace) -> None:
             patch = _build_patch_from_descriptor(descriptor, metadata, task)
             if not patch.has_changes():
                 continue
-            client.modify_task(task.uid, patch)
+            client.modify_task(task, patch)
             modified += 1
         if modified == 0:
             _exit_with_message("no changes provided")
@@ -420,7 +426,7 @@ def _handle_do(args: argparse.Namespace) -> None:
             _exit_with_message("no tasks match filter")
         completed: list[str] = []
         for task in tasks:
-            client.modify_task(task.uid, patch)
+            client.modify_task(task, patch)
             completed.append(task.uid)
         return completed
 
@@ -444,7 +450,11 @@ def _handle_delete(args: argparse.Namespace) -> None:
 
 def _handle_list(args: argparse.Namespace) -> None:
     config = _resolve_config(args.env)
-    tasks = _run_with_client(args.env, lambda client: client.list_tasks())
+    force_refresh = _should_force_refresh()
+    tasks = _run_with_client(
+        args.env,
+        lambda client: client.list_tasks(force_refresh=force_refresh),
+    )
     if not tasks:
         print("no tasks found")
         return
