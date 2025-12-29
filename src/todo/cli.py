@@ -12,7 +12,6 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-from .caldav_client import CalDAVClient
 from .config import (
     CaldavConfig,
     config_file_path,
@@ -27,16 +26,24 @@ from .update_linear_parser import parse_update
 
 
 T = TypeVar("T")
-_CLIENT_FACTORY: type[CalDAVClient] = CalDAVClient
 
 
-def _run_with_client(env: str | None, callback: Callable[[CalDAVClient], T]) -> T:
+def _default_client_factory(config: CaldavConfig) -> "CalDAVClient":
+    from .caldav_client import CalDAVClient
+
+    return CalDAVClient(config)
+
+
+_CLIENT_FACTORY: Callable[[CaldavConfig], "CalDAVClient"] = _default_client_factory
+
+
+def _run_with_client(env: str | None, callback: Callable[["CalDAVClient"], T]) -> T:
     config = _resolve_config(env)
     with _CLIENT_FACTORY(config) as client:
         return callback(client)
 
 
-def _cache_client(env: str | None) -> CalDAVClient:
+def _cache_client(env: str | None) -> "CalDAVClient":
     config = _resolve_config(env)
     return _CLIENT_FACTORY(config)
 
@@ -216,7 +223,7 @@ def _build_patch_from_descriptor(
     return patch
 
 
-def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
+def _delete_many(client: "CalDAVClient", targets: list[str]) -> list[str]:
     deleted: list[str] = []
     for uid in targets:
         client.delete_task(uid)
@@ -224,7 +231,7 @@ def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
     return deleted
 
 
-def _sorted_tasks(client: CalDAVClient) -> list[Task]:
+def _sorted_tasks(client: "CalDAVClient") -> list[Task]:
     return sorted(client.list_tasks(), key=_task_sort_key)
 
 

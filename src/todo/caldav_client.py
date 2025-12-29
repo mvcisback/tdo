@@ -1,19 +1,21 @@
 from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
 import time
 from pathlib import Path
 from time import perf_counter
-from typing import Dict
+from typing import Dict, TYPE_CHECKING
 from uuid import uuid4
-
-from caldav import DAVClient, Calendar
-from caldav.objects import CalendarObjectResource
 
 from .config import CaldavConfig
 from .models import Task, TaskPatch, TaskPayload
 from .sqlite_cache import DirtyTask, SqliteTaskCache
+
+if TYPE_CHECKING:
+    from caldav import DAVClient, Calendar
+    from caldav.objects import CalendarObjectResource
 
 
 def _debug_log(stage: str, duration: float, info: str | None = None) -> None:
@@ -43,14 +45,16 @@ class SyncResult:
 class CalDAVClient:
     config: CaldavConfig
     cache_path: Path | None = field(default=None)
-    client: DAVClient | None = field(default=None, init=False)
-    calendar: Calendar | None = field(default=None, init=False)
+    client: "DAVClient" | None = field(default=None, init=False)
+    calendar: "Calendar" | None = field(default=None, init=False)
     cache: SqliteTaskCache = field(init=False)
 
     def __post_init__(self) -> None:
         self.cache = SqliteTaskCache(self.cache_path)
 
     def __enter__(self) -> CalDAVClient:
+        from caldav import DAVClient
+
         self.client = DAVClient(
             url=self.config.calendar_url,
             username=self.config.username,
@@ -183,13 +187,13 @@ class CalDAVClient:
         pushed = self.push()
         return SyncResult(pulled=pulled, pushed=pushed)
 
-    def _ensure_calendar(self) -> Calendar:
+    def _ensure_calendar(self) -> "Calendar":
         if self.calendar is None:
             raise RuntimeError("caldav client is not initialized")
         return self.calendar
 
 
-    def _push_create(self, task: Task, calendar: Calendar) -> Task:
+    def _push_create(self, task: Task, calendar: "Calendar") -> Task:
         body = self._build_ics(
             task.summary,
             task.due,
@@ -202,7 +206,7 @@ class CalDAVClient:
         todo = calendar.add_todo(body)
         return self._task_from_resource(todo)
 
-    def _push_update(self, task: Task, calendar: Calendar) -> Task:
+    def _push_update(self, task: Task, calendar: "Calendar") -> Task:
         summary = task.summary or task.uid
         body = self._build_ics(summary, task.due, task.priority, task.x_properties, task.categories, task.uid, task.status)
         resource = self._resource_for_update(task, calendar)
@@ -211,12 +215,14 @@ class CalDAVClient:
         resource.save()
         return self._task_from_resource(resource)
 
-    def _push_delete(self, task: Task, calendar: Calendar) -> None:
+    def _push_delete(self, task: Task, calendar: "Calendar") -> None:
         todo = calendar.todo_by_uid(task.uid)
         if todo:
             todo.delete()
 
-    def _resource_for_update(self, task: Task, calendar: Calendar) -> CalendarObjectResource:
+    def _resource_for_update(self, task: Task, calendar: "Calendar") -> "CalendarObjectResource":
+        from caldav.objects import CalendarObjectResource
+
         if task.href:
             return CalendarObjectResource(client=self.client, url=task.href, parent=calendar)
         resource = calendar.todo_by_uid(task.uid)
@@ -224,7 +230,7 @@ class CalDAVClient:
             raise KeyError(f"task {task.uid} missing href")
         return resource
 
-    def _task_from_resource(self, resource: CalendarObjectResource) -> Task:
+    def _task_from_resource(self, resource: "CalendarObjectResource") -> Task:
         task = self._task_from_data(resource.data or "")
         if resource.url:
             task.href = str(resource.url)
