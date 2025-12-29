@@ -1,5 +1,5 @@
 {
-  description = "Nix flake for the todo CLI";
+  description = "Nix flake for the tdo CLI";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
@@ -44,7 +44,7 @@
             overlay
           ]
         );
-        venv = pythonSet.mkVirtualEnv "todo-venv" workspace.deps.default;
+        venv = pythonSet.mkVirtualEnv "tdo-venv" workspace.deps.default;
         testHash = "$2b$12$.R3ZiywXe5tgoRagYudVL.hAEGyg4H40Gv0tpSLxNN4MFobFQp3Zy";
         radicaleTest = pkgs.writeScriptBin "radicale-test" ''
 #!${pkgs.bash}/bin/bash
@@ -71,7 +71,7 @@ EOF
 export RADICALE_CONFIG="$config"
 exec ${pkgs.radicale}/bin/radicale
         '';
-        todoApp = pkgs.writeShellScriptBin "todo" ''
+        tdoApp = pkgs.writeShellScriptBin "tdo" ''
           cd ${workspaceRoot}
           export PYTHONPATH=${workspaceRoot}
           exec ${venv}/bin/python main.py "$@"
@@ -87,11 +87,11 @@ exec ${pkgs.radicale}/bin/radicale
             export PYTHONPATH=${workspaceRoot}
           '';
         };
-        packages.todo = todoApp;
+        packages.tdo = tdoApp;
         packages.radicaleTest = radicaleTest;
         apps.default = {
           type = "app";
-          program = "${todoApp}/bin/todo";
+          program = "${tdoApp}/bin/tdo";
         };
         apps.radicaleTest = {
           type = "app";

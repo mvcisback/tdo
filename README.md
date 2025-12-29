@@ -1,10 +1,10 @@
-# Async CalDAV TODO CLI
+# Async CalDAV TDO CLI
 
 An async Python-cli inspired by Taskwarrior that stores tasks on CalDAV servers while preserving X-Properties for better interoperability with clients such as Apple Calendar, Tasks.org, and Deck.
 
 ## Features
 
-- Taskwarrior-style syntax for adding, modifying, and deleting tasks (e.g. `todo add my task pri:L due:eod`).
+- Taskwarrior-style syntax for adding, modifying, and deleting tasks (e.g. `tdo add my task pri:L due:eod`).
 - Built with existing Python CalDAV libraries and async patterns wherever possible.
 - Retains X-Property metadata like `X-APPLE-SORT-ORDER`, `X-TASKS-ORG-ORDER`, `X-PRIORITY-SCORE`, and other client-specific extensions so downstream clients keep custom ordering, workflows, and tracking data.
 - Designed for extensibility (checklists, Kanban states, time tracking metadata, Nextcloud Deck links) by mirroring Taskwarrior semantics over CalDAV.
@@ -13,19 +13,19 @@ An async Python-cli inspired by Taskwarrior that stores tasks on CalDAV servers 
 ## Getting Started
 
 1. Install dependencies (see `pyproject.toml`).
-2. Configure CalDAV credentials (URL, username, password or token) in a TOML file under `~/.config/todo/config.<env>.toml` using the `[caldav]` section.
-3. Use `todo config init` to interactively build that file (see options below) and persist the credentials you just collected.
-4. Run `todo --help` to view available commands and syntax templates.
+2. Configure CalDAV credentials (URL, username, password or token) in a TOML file under `~/.config/tdo/config.<env>.toml` using the `[caldav]` section.
+3. Use `tdo config init` to interactively build that file (see options below) and persist the credentials you just collected.
+4. Run `tdo --help` to view available commands and syntax templates.
 
 ### Configuration helper
 
-`todo config init` prompts for the CalDAV calendar URL and username, then stores them under `~/.config/todo/config.<env>.toml` (defaults to `default`).
+`tdo config init` prompts for the CalDAV calendar URL and username, then stores them under `~/.config/tdo/config.<env>.toml` (defaults to `default`).
 
 Pass `--env <name>` to target a different environment (e.g. `default`, `personal`, `work`), `--config-home` to redirect the base directory, and `--force` to overwrite an existing file. Additional options such as `--password`, `--token`, and `--calendar-url` / `--username` can be used to skip the interactive prompts when automating the setup.
 
 ### Environment-based configuration
 
-Set `TODO_CONFIG_FILE` to point at any existing TOML (or ini-style) CalDAV configuration file when the defaults in `~/.config/todo/` do not work for you. This takes precedence over other config file discovery so scripts can switch contexts quickly by exporting the variable before invoking `todo`. All commands honor that environment variable automatically (no need for `--config-file`).
+Set `TDO_CONFIG_FILE` to point at any existing TOML (or ini-style) CalDAV configuration file when the defaults in `~/.config/tdo/` do not work for you. This takes precedence over other config file discovery so scripts can switch contexts quickly by exporting the variable before invoking `tdo`. All commands honor that environment variable automatically (no need for `--config-file`).
 
 Sample configs live in `examples/configs/` to show how to write valid `[caldav]` sections for each environment.
 
@@ -37,17 +37,17 @@ Launch a disposable CalDAV backend via `nix run .#radicaleTest`; it binds to por
 
 | Command | Description |
 | --- | --- |
-| `todo add <description> [pri:<level>] [due:<when>] [x:<property>:<value>]` | Add a new task with optional priority, due date, or custom X-properties. |
-| `todo modify <id> [pri:<level>] [due:<when>]` | Update an existing task, e.g. `todo modify 3 pri:H`. |
-| `todo del <id[,id...]>` | Delete one or more tasks (comma-separated IDs). |
-| `todo list [filter]` | Show synced tasks; filters accept Taskwarrior-like tokens (`status:pending`, `pri:H`, etc.). |
+| `tdo add <description> [pri:<level>] [due:<when>] [x:<property>:<value>]` | Add a new task with optional priority, due date, or custom X-properties. |
+| `tdo modify <id> [pri:<level>] [due:<when>]` | Update an existing task, e.g. `tdo modify 3 pri:H`. |
+| `tdo del <id[,id...]>` | Delete one or more tasks (comma-separated IDs). |
+| `tdo list [filter]` | Show synced tasks; filters accept Taskwarrior-like tokens (`status:pending`, `pri:H`, etc.). |
 
 ### Examples
 
 ```
-todo add "Refactor sync layer" pri:H due:tue x:X-APPLE-SORT-ORDER:10
-todo modify 3 pri:M +in-progress -backlog project:work wait:2h due:2025-08-01T09:00
-todo del 2,5
+tdo add "Refactor sync layer" pri:H due:tue x:X-APPLE-SORT-ORDER:10
+tdo modify 3 pri:M +in-progress -backlog project:work wait:2h due:2025-08-01T09:00
+tdo del 2,5
 ```
 
 Add/modify commands share a PEG-driven parser that supports the Taskwarrior-style directives shown above, including `+tag`, `-tag`, `project:`, `due:`, `wait:`, and the rich date/duration expressions that mirror Taskwarrior's semantics (e.g., `tomorrow`, `eod`, `1st`, or ISO durations).

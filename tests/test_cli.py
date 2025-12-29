@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from todo import cli
-from todo.config import CaldavConfig
-from todo.models import Task, TaskPatch, TaskPayload
+from tdo import cli
+from tdo.config import CaldavConfig
+from tdo.models import Task, TaskPatch, TaskPayload
 
 
 def run_cli(arguments: list[str]) -> tuple[int, str]:
@@ -254,7 +254,7 @@ def test_list_command_shows_uids_when_enabled(tmp_path, monkeypatch: pytest.Monk
         )
 
     monkeypatch.setattr(cli, "load_config_from_path", fake_load)
-    monkeypatch.setenv("TODO_CONFIG_FILE", str(config_path))
+    monkeypatch.setenv("TDO_CONFIG_FILE", str(config_path))
     exit_code, stdout = run_cli(["list"])
     assert exit_code == 0
 
@@ -271,7 +271,7 @@ def test_list_command_accepts_config_file(tmp_path, monkeypatch: pytest.MonkeyPa
         return CaldavConfig(calendar_url="https://example.com/cal", username="tester")
 
     monkeypatch.setattr(cli, "load_config_from_path", fake_load)
-    monkeypatch.setenv("TODO_CONFIG_FILE", str(config_path))
+    monkeypatch.setenv("TDO_CONFIG_FILE", str(config_path))
     exit_code, stdout = run_cli(["list"])
     assert exit_code == 0
     assert called

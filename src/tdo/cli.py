@@ -49,7 +49,7 @@ def _cache_client(env: str | None) -> "CalDAVClient":
 
 
 def _resolve_config(env: str | None) -> CaldavConfig:
-    config_path = os.environ.get("TODO_CONFIG_FILE")
+    config_path = os.environ.get("TDO_CONFIG_FILE")
     if config_path:
         return load_config_from_path(Path(config_path).expanduser())
     return load_config(env)
@@ -503,7 +503,7 @@ def _handle_list(args: argparse.Namespace) -> None:
     client = _cache_client(args.env)
     tasks = client.list_tasks()
     if not tasks:
-        print("no cached tasks found; run 'todo pull' to synchronize")
+        print("no cached tasks found; run 'tdo pull' to synchronize")
         return
     active_tasks = _filter_active_tasks(tasks)
     filtered_tasks = _select_tasks_for_filter(
@@ -565,7 +565,7 @@ def _handle_config_help(args: argparse.Namespace) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="todo")
+    parser = argparse.ArgumentParser(prog="tdo")
     subparsers = parser.add_subparsers(dest="command")
 
     add_parser = subparsers.add_parser("add")

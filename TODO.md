@@ -1,4 +1,3 @@
-- [ ] Implement wait via DTSTART
-- [ ] Implement task descriptions (via the annotate command)
-- [ ] Implement tags via + syntax
-- [ ] Implement project via project:
+- [ ] Due dates should round to day,week,month, e.g., 1d, 2m, 3w, 1y
+- [ ] nix systemd daemon for sync
+- [ ] rename whole project to tdo

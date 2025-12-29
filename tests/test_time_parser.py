@@ -5,7 +5,7 @@ from datetime import timedelta
 import arrow
 import pytest
 
-from todo.time_parser import parse_due_value, parse_wait_value
+from tdo.time_parser import parse_due_value, parse_wait_value
 
 
 REFERENCE = arrow.get("2025-05-15T10:30:00")

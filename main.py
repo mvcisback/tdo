@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 
-from todo import cli
+from tdo import cli
 
 
 def main() -> None:

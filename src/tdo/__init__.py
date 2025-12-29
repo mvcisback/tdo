@@ -7,6 +7,6 @@ __all__ = ["cli", "config", "caldav_client", "models", "sqlite_cache", "update_p
 
 
 try:
-    __version__ = version("todo")
+    __version__ = version("tdo")
 except PackageNotFoundError:
     __version__ = "0.1.0"

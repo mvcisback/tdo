@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from todo.models import Task
-from todo.sqlite_cache import SqliteTaskCache
+from tdo.models import Task
+from tdo.sqlite_cache import SqliteTaskCache
 
 
 def test_sqlite_cache_preserves_pending(tmp_path: Path) -> None:

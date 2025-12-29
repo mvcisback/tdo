@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from todo.config import CaldavConfig, config_file_path, load_config, write_config_file
+from tdo.config import CaldavConfig, config_file_path, load_config, write_config_file
 
 
 CONFIG = CaldavConfig(

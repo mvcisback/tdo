@@ -18,11 +18,11 @@ class CaldavConfig:
 
 
 def resolve_env(env: str | None = None) -> str:
-    return env or os.environ.get("TODO_ENV") or "default"
+    return env or os.environ.get("TDO_ENV") or "default"
 
 
 def config_file_path(env: str | None = None, config_home: Path | None = None) -> Path:
-    base_home = config_home or Path.home() / ".config" / "todo"
+    base_home = config_home or Path.home() / ".config" / "tdo"
     resolved_env = resolve_env(env)
     return base_home / f"config.{resolved_env}.toml"
 
@@ -87,11 +87,11 @@ def _parse_bool_like(value: str | bool | None) -> bool | None:
 
 def load_config(env: str | None = None, config_home: Path | None = None) -> CaldavConfig:
     values = {
-        "calendar_url": os.environ.get("TODO_CALDAV_URL"),
-        "username": os.environ.get("TODO_USERNAME"),
-        "password": os.environ.get("TODO_PASSWORD"),
-        "token": os.environ.get("TODO_TOKEN"),
-        "show_uids": os.environ.get("TODO_SHOW_UIDS"),
+        "calendar_url": os.environ.get("TDO_CALDAV_URL"),
+        "username": os.environ.get("TDO_USERNAME"),
+        "password": os.environ.get("TDO_PASSWORD"),
+        "token": os.environ.get("TDO_TOKEN"),
+        "show_uids": os.environ.get("TDO_SHOW_UIDS"),
     }
     path = config_file_path(env, config_home)
     if not path.exists():

@@ -71,14 +71,14 @@ class SqliteTaskCache:
     def _resolve_path(path: Path | None) -> Path:
         if path:
             return path.expanduser()
-        override = os.environ.get("TODO_TASK_CACHE_FILE")
+        override = os.environ.get("TDO_TASK_CACHE_FILE")
         if override:
             return Path(override).expanduser()
         try:
             base = Path.home()
         except OSError:
             base = Path.cwd()
-        return base / ".cache" / "todo" / "tasks.db"
+        return base / ".cache" / "tdo" / "tasks.db"
 
     def _ensure_schema(self) -> None:
         script = """

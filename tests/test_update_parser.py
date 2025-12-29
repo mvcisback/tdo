@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import random
 
-from todo.update_linear_parser import parse_update as parse_update_linear
-from todo.update_descriptor import UpdateDescriptor
-from todo.update_parser import parse_update as parse_update_grammar
+from tdo.update_linear_parser import parse_update as parse_update_linear
+from tdo.update_descriptor import UpdateDescriptor
+from tdo.update_parser import parse_update as parse_update_grammar
 
 parse_update = parse_update_linear
 

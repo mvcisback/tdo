@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from todo.caldav_client import CalDAVClient
-from todo.config import CaldavConfig
-from todo.models import Task, TaskPatch, TaskPayload
+from tdo.caldav_client import CalDAVClient
+from tdo.config import CaldavConfig
+from tdo.models import Task, TaskPatch, TaskPayload
 
 
 CALENDAR_CONFIG = CaldavConfig(calendar_url="https://example.com/calendars/main", username="alice")
