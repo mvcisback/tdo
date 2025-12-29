@@ -303,6 +303,8 @@ def test_config_init_command_writes_file(tmp_path) -> None:
             "secret",
             "--token",
             "tok",
+            "--keyring-service",
+            "tdo-service",
             "--force",
         ]
     )
@@ -314,3 +316,4 @@ def test_config_init_command_writes_file(tmp_path) -> None:
     assert "username = \"tester\"" in contents
     assert "password = \"secret\"" in contents
     assert "token = \"tok\"" in contents
+    assert "keyring_service = \"tdo-service\"" in contents

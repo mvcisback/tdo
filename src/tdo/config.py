@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Tuple, Union
+
+import keyring
 
 
 @dataclass
@@ -14,7 +17,18 @@ class CaldavConfig:
     username: str
     password: str | None = None
     token: str | None = None
+    keyring_service: str | None = None
     show_uids: bool = False
+
+    def getpass(self):
+        password = self.password
+        if password is None:
+            password = _retrieve_password_from_keyring(self.keyring_service, self.username)
+        if password is None:
+            password = getpass.getpass()
+            keyring.set_password(self.keyring_service, self.username, password)
+        return password
+
 
 
 def resolve_env(env: str | None = None) -> str:
@@ -38,6 +52,8 @@ def write_config_file(path: Path, config: CaldavConfig, *, force: bool = False) 
         lines.append(f"password = {json.dumps(config.password)}")
     if config.token:
         lines.append(f"token = {json.dumps(config.token)}")
+    if config.keyring_service:
+        lines.append(f"keyring_service = {json.dumps(config.keyring_service)}")
     path.write_text("\n".join(lines) + "\n")
     return path
 
@@ -72,6 +88,17 @@ def _load_file_values(path: Path) -> dict[str, Union[str, bool]]:
     return dict(_parse_config_file(path))
 
 
+def _retrieve_password_from_keyring(service: str, username: str) -> str | None:
+    try:
+        import keyring
+    except ModuleNotFoundError:
+        return None
+    try:
+        return keyring.get_password(service, username)
+    except Exception:
+        return None
+
+
 def _parse_bool_like(value: str | bool | None) -> bool | None:
     if value is None:
         return None
@@ -91,6 +118,7 @@ def load_config(env: str | None = None, config_home: Path | None = None) -> Cald
         "username": os.environ.get("TDO_USERNAME"),
         "password": os.environ.get("TDO_PASSWORD"),
         "token": os.environ.get("TDO_TOKEN"),
+        "keyring_service": os.environ.get("TDO_KEYRING_SERVICE"),
         "show_uids": os.environ.get("TDO_SHOW_UIDS"),
     }
     path = config_file_path(env, config_home)
@@ -116,13 +144,16 @@ def _build_config(values: dict[str, str | bool | None]) -> CaldavConfig:
     username = values.get("username")
     password = values.get("password")
     token = values.get("token")
+    keyring_service = values.get("keyring_service", "tdo")
     show_uids = _parse_bool_like(values.get("show_uids"))
     if not url or not username:
         raise RuntimeError("caldav configuration requires calendar_url and username")
+         
     return CaldavConfig(
         calendar_url=url,
         username=username,
         password=password,
         token=token,
+        keyring_service=keyring_service,
         show_uids=show_uids if show_uids is not None else False,
     )

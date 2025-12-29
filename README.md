@@ -22,7 +22,7 @@ An async Python CLI inspired by Taskwarrior semantics that stores tasks on CalDA
 
 `tdo config init` guides you through creating a CalDAV configuration file. It prompts for the calendar URL and username and writes them to `~/.config/tdo/config.<env>.toml` (default `env` is `default`).
 
-Pass `--env <name>` to target a different environment (`personal`, `work`, etc.), `--config-home` to redirect the base directory, and `--force` to overwrite an existing file. Supply `--password`, `--token`, `--calendar-url`, or `--username` to skip prompts when scripting setup.
+Pass `--env <name>` to target a different environment (`personal`, `work`, etc.), `--config-home` to redirect the base directory, and `--force` to overwrite an existing file. Supply `--password`, `--token`, `--calendar-url`, `--username`, or `--keyring-service` to skip prompts when scripting setup.
 
 ### Environment-based configuration
 
@@ -33,6 +33,8 @@ Other environment variables that influence behavior:
 - `TDO_ENV` specifies which `config.<env>.toml` file to load when you don’t pass `--env`.
 - `TDO_SHOW_UIDS` (true/false) enables the UID column in the listing table without modifying your workflow.
 - `TDO_CALDAV_URL`, `TDO_USERNAME`, `TDO_PASSWORD`, and `TDO_TOKEN` act as overrides when you don’t want to store secrets on disk.
+- `TDO_KEYRING_SERVICE` points at the keyring service whose entry stores the CalDAV password (lookup happens via `keyring.get_password(service, username)`).
+  Providing a `keyring_service` (via config, CLI flag, or environment) lets TDO fetch the password through the keyring backend before falling back to any plaintext entry, so the config file no longer needs the actual secret.
 
 Sample configs live in `examples/configs/` so you can copy the TOML structure for each environment.
 

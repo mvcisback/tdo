@@ -1,5 +1,3 @@
 [caldav]
 calendar_url = "http://localhost:5232/test/3eb28eb8-b5be-4a03-9dc3-ec2a81d1b403/"
 username = "test"
-password = "test"
-token = ""

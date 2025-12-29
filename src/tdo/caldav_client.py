@@ -1,9 +1,8 @@
 from __future__ import annotations
-from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
-import time
 from pathlib import Path
 from time import perf_counter
 from typing import Dict, TYPE_CHECKING
@@ -58,7 +57,7 @@ class CalDAVClient:
         self.client = DAVClient(
             url=self.config.calendar_url,
             username=self.config.username,
-            password=self.config.password,
+            password=self.config.getpass(),
         )
         if self.config.token and self.client.session:
             self.client.session.headers["Authorization"] = f"Bearer {self.config.token}"
