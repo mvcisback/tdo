@@ -330,6 +330,16 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
 _COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "sync"}
 
 
+def _looks_like_filter_token(value: str) -> bool:
+    if not value:
+        return False
+    segments = [segment.strip() for segment in value.split(",")]
+    normalized = [segment for segment in segments if segment]
+    if not normalized:
+        return False
+    return all(segment.isdigit() for segment in normalized)
+
+
 def _split_filter_and_command(argv: Sequence[str]) -> tuple[str | None, list[str]]:
     candidates = list(argv)
     if not candidates:
@@ -337,9 +347,9 @@ def _split_filter_and_command(argv: Sequence[str]) -> tuple[str | None, list[str
     first, rest = candidates[0], candidates[1:]
     if first in _COMMAND_NAMES:
         return None, candidates
-    if not rest:
-        return first, ["list"]
-    return first, rest
+    if _looks_like_filter_token(first):
+        return first, rest or ["list"]
+    return None, candidates
 
 
 def _parse_filter_indices(raw: str | None) -> list[str] | None:
@@ -373,6 +383,15 @@ def _select_tasks_for_filter(tasks: list[Task], indices: list[str]) -> list[Task
             _exit_with_message(f"filter {token} did not match any task")
         selected.append(task)
     return selected
+
+
+def _is_task_completed(task: Task) -> bool:
+    status = (task.status or "").strip().upper()
+    return status in {"COMPLETED", "DONE"}
+
+
+def _filter_active_tasks(tasks: list[Task]) -> list[Task]:
+    return [task for task in tasks if not _is_task_completed(task)]
 
 
 def _normalize_tokens(tokens: Sequence[str] | None) -> list[str]:
@@ -449,8 +468,9 @@ def _handle_list(args: argparse.Namespace) -> None:
     if not tasks:
         print("no cached tasks found; run 'todo pull' to synchronize")
         return
+    active_tasks = _filter_active_tasks(tasks)
     filtered_tasks = _select_tasks_for_filter(
-        tasks,
+        active_tasks,
         _effective_filter_indices(args.filter_indices),
     )
     if not filtered_tasks:
@@ -572,7 +592,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     input_args = list(argv if argv is not None else sys.argv[1:])
     filter_raw, command_tokens = _split_filter_and_command(input_args)
     parser = _build_parser()
-    args = parser.parse_args(command_tokens)
+    args, remaining = parser.parse_known_args(command_tokens)
+    if remaining:
+        tokens_value = getattr(args, "tokens", None)
+        if tokens_value is not None:
+            args.tokens = list(tokens_value) + remaining
+        else:
+            parser.error(f"unrecognized arguments: {' '.join(remaining)}")
     args.filter_indices = _parse_filter_indices(filter_raw)
     handler = getattr(args, "func", None)
     if handler is None:

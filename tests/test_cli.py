@@ -180,6 +180,17 @@ def test_list_command_outputs_tasks() -> None:
     assert "list-task" not in stdout
 
 
+def test_list_command_hides_completed_tasks() -> None:
+    DummyClient.list_entries = [
+        Task(uid="active", summary="Active task", due=None, priority=1),
+        Task(uid="done", summary="Done task", due=None, priority=1, status="COMPLETED"),
+    ]
+    exit_code, stdout = run_cli(["list"])
+    assert exit_code == 0
+    assert "Active task" in stdout
+    assert "Done task" not in stdout
+
+
 def test_default_command_is_list() -> None:
     exit_code, stdout = run_cli([])
     assert exit_code == 0
@@ -195,6 +206,28 @@ def test_filter_indices_default_to_list_command() -> None:
     assert exit_code == 0
     assert "Bravo" in stdout
     assert "Alpha" not in stdout
+
+
+def test_modify_command_accepts_dash_prefixed_tokens() -> None:
+    DummyClient.list_entries = [
+        Task(uid="first", summary="First", due=None, priority=1),
+        Task(uid="second", summary="Second", due=None, priority=2),
+    ]
+    exit_code, stdout = run_cli(["1", "modify", "-bar", "summary:Updated"])
+    assert exit_code == 0
+    assert DummyClient.last_patch is not None
+    assert DummyClient.last_patch.summary == "Updated"
+
+
+def test_modify_command_removes_dash_prefixed_tag() -> None:
+    DummyClient.list_entries = [
+        Task(uid="first", summary="First", due=None, priority=1, categories=["foo"]),
+    ]
+    exit_code, stdout = run_cli(["1", "modify", "-foo"])
+    assert exit_code == 0
+    assert "modified 1 tasks" in stdout
+    assert DummyClient.last_patch is not None
+    assert DummyClient.last_patch.categories == []
 
 
 def test_modify_command_accepts_numeric_identifier() -> None:

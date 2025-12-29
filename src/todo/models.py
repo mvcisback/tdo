@@ -43,5 +43,5 @@ class TaskPatch:
             or self.priority is not None
             or self.due is not None
             or self.x_properties
-            or self.categories
+            or self.categories is not None
         )
