@@ -262,6 +262,35 @@ def _format_due_label(due: datetime | None, now: datetime) -> str:
 SUMMARY_WIDTH = 45
 
 
+@dataclass(frozen=True)
+class ColumnSpec:
+    name: str
+    style: str
+    justify: str
+    max_width: int
+    ellipsize: bool = False
+
+
+_BASE_COLUMN_SPECS = [
+    ColumnSpec("ID", "cyan", "right", 3),
+    ColumnSpec("Age", "bright_blue", "right", 4),
+    ColumnSpec("Project", "magenta", "left", 12),
+    ColumnSpec("Tag", "yellow", "left", 10),
+    ColumnSpec("Due", "bright_green", "left", 10),
+    ColumnSpec("Description", "white", "left", SUMMARY_WIDTH, ellipsize=True),
+    ColumnSpec("Urg", "bright_red", "right", 4),
+]
+_UID_COLUMN_SPEC = ColumnSpec("UID", "dim", "left", 36)
+
+
+def _truncate_value(value: str, max_width: int, ellipsize: bool = False) -> str:
+    if len(value) <= max_width:
+        return value
+    if ellipsize and max_width > 3:
+        return value[: max_width - 3] + "..."
+    return value[:max_width]
+
+
 def _format_project(task: Task) -> str:
     project = task.x_properties.get("X-PROJECT") or task.x_properties.get("X-TASKS-ORG-ORDER")
     return project or "-"
@@ -289,15 +318,11 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
         row_styles=["", "dim"],
         padding=(0, 1),
     )
-    table.add_column("ID", justify="right", style="cyan", width=3)
-    table.add_column("Age", justify="right", style="bright_blue", width=4)
-    table.add_column("Project", style="magenta", width=12)
-    table.add_column("Tag", style="yellow", width=10)
-    table.add_column("Due", style="bright_green", width=10)
-    table.add_column("Description", style="white", width=45)
-    table.add_column("Urg", justify="right", style="bright_red", width=4)
+    column_specs = list(_BASE_COLUMN_SPECS)
     if show_uids:
-        table.add_column("UID", style="dim")
+        column_specs.append(_UID_COLUMN_SPEC)
+    column_lengths: dict[str, int] = {spec.name: len(spec.name) for spec in column_specs}
+    rows: list[list[str]] = []
     now = datetime.now()
     sorted_tasks = sorted(tasks, key=_task_sort_key)
     for index, task in enumerate(sorted_tasks, start=1):
@@ -306,23 +331,35 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
         tag = _format_tag(task)
         due_date = _format_due_date(task.due)
         summary = task.summary or ""
-        trimmed_summary = (
-            summary[: SUMMARY_WIDTH - 3] + "..."
-            if len(summary) > SUMMARY_WIDTH
-            else summary
-        )
         priority_label = str(task.priority) if task.priority is not None else "-"
-        row = [
-            str(index),
-            due_label,
-            project,
-            tag,
-            due_date,
-            trimmed_summary,
-            priority_label,
-        ]
+        values: dict[str, str] = {
+            "ID": str(index),
+            "Age": due_label,
+            "Project": project,
+            "Tag": tag,
+            "Due": due_date,
+            "Description": summary,
+            "Urg": priority_label,
+        }
         if show_uids:
-            row.append(task.uid)
+            values["UID"] = task.uid
+        row: list[str] = []
+        for spec in column_specs:
+            raw_value = values[spec.name]
+            trimmed = _truncate_value(raw_value, spec.max_width, ellipsize=spec.ellipsize)
+            row.append(trimmed)
+            column_lengths[spec.name] = max(column_lengths[spec.name], len(trimmed))
+        rows.append(row)
+    for spec in column_specs:
+        table.add_column(
+            spec.name,
+            style=spec.style,
+            justify=spec.justify,
+            min_width=column_lengths[spec.name],
+            max_width=spec.max_width,
+            no_wrap=True,
+        )
+    for row in rows:
         table.add_row(*row)
     console.print(table)
 
