@@ -22,8 +22,8 @@ from .config import (
 )
 from .models import Task, TaskPatch, TaskPayload
 from .time_parser import parse_due_value, parse_wait_value
+from .update_descriptor import UpdateDescriptor
 from .update_linear_parser import parse_update
-from .update_parser import UpdateDescriptor
 
 
 T = TypeVar("T")
@@ -34,6 +34,11 @@ def _run_with_client(env: str | None, callback: Callable[[CalDAVClient], T]) -> 
     config = _resolve_config(env)
     with _CLIENT_FACTORY(config) as client:
         return callback(client)
+
+
+def _cache_client(env: str | None) -> CalDAVClient:
+    config = _resolve_config(env)
+    return _CLIENT_FACTORY(config)
 
 
 def _resolve_config(env: str | None) -> CaldavConfig:
@@ -219,14 +224,8 @@ def _delete_many(client: CalDAVClient, targets: list[str]) -> list[str]:
     return deleted
 
 
-def _should_force_refresh() -> bool:
-    if os.environ.get("TODO_FORCE_REFRESH") == "1":
-        return True
-    return os.environ.get("TODO_USE_CACHE") != "1"
-
-
 def _sorted_tasks(client: CalDAVClient) -> list[Task]:
-    return sorted(client.list_tasks(force_refresh=_should_force_refresh()), key=_task_sort_key)
+    return sorted(client.list_tasks(), key=_task_sort_key)
 
 
 def _task_sort_key(task: Task) -> tuple[datetime, int, str]:
@@ -378,7 +377,8 @@ def _handle_add(args: argparse.Namespace) -> None:
     descriptor = _parse_update_descriptor(tokens)
     metadata = _parse_metadata(tokens)
     payload = _build_payload(args.description, descriptor, metadata)
-    created = _run_with_client(args.env, lambda client: client.create_task(payload))
+    client = _cache_client(args.env)
+    created = client.create_task(payload)
     print(created.uid)
 
 
@@ -388,70 +388,57 @@ def _handle_modify(args: argparse.Namespace) -> None:
     metadata = _parse_metadata(tokens)
     if not _has_update_candidates(descriptor, metadata):
         _exit_with_message("no changes provided")
-
-    def callback(client: CalDAVClient) -> int:
-        tasks = _select_tasks_for_filter(
-            _sorted_tasks(client),
-            _effective_filter_indices(args.filter_indices),
-        )
-        if not tasks:
-            _exit_with_message("no tasks match filter")
-        modified = 0
-        for task in tasks:
-            patch = _build_patch_from_descriptor(descriptor, metadata, task)
-            if not patch.has_changes():
-                continue
-            client.modify_task(task, patch)
-            modified += 1
-        if modified == 0:
-            _exit_with_message("no changes provided")
-        return modified
-
-    modified_count = _run_with_client(args.env, callback)
-    print(f"modified {modified_count} tasks")
+    client = _cache_client(args.env)
+    tasks = _select_tasks_for_filter(
+        _sorted_tasks(client),
+        _effective_filter_indices(args.filter_indices),
+    )
+    if not tasks:
+        _exit_with_message("no tasks match filter")
+    modified = 0
+    for task in tasks:
+        patch = _build_patch_from_descriptor(descriptor, metadata, task)
+        if not patch.has_changes():
+            continue
+        client.modify_task(task, patch)
+        modified += 1
+    if modified == 0:
+        _exit_with_message("no changes provided")
+    print(f"modified {modified} tasks")
 
 
 def _handle_do(args: argparse.Namespace) -> None:
     patch = TaskPatch(status="COMPLETED")
-
-    def mark_done_many(client: CalDAVClient) -> list[str]:
-        tasks = _select_tasks_for_filter(
-            _sorted_tasks(client),
-            _effective_filter_indices(args.filter_indices),
-        )
-        if not tasks:
-            _exit_with_message("no tasks match filter")
-        completed: list[str] = []
-        for task in tasks:
-            client.modify_task(task, patch)
-            completed.append(task.uid)
-        return completed
-
-    completed = _run_with_client(args.env, mark_done_many)
+    client = _cache_client(args.env)
+    tasks = _select_tasks_for_filter(
+        _sorted_tasks(client),
+        _effective_filter_indices(args.filter_indices),
+    )
+    if not tasks:
+        _exit_with_message("no tasks match filter")
+    completed: list[str] = []
+    for task in tasks:
+        client.modify_task(task, patch)
+        completed.append(task.uid)
     print(f"marked {len(completed)} tasks as done")
 
 
 def _handle_delete(args: argparse.Namespace) -> None:
-    def callback(client: CalDAVClient) -> list[str]:
-        tasks = _select_tasks_for_filter(
-            _sorted_tasks(client),
-            _effective_filter_indices(args.filter_indices),
-        )
-        if not tasks:
-            _exit_with_message("no tasks match filter")
-        return _delete_many(client, [task.uid for task in tasks])
-
-    deleted = _run_with_client(args.env, callback)
+    client = _cache_client(args.env)
+    tasks = _select_tasks_for_filter(
+        _sorted_tasks(client),
+        _effective_filter_indices(args.filter_indices),
+    )
+    if not tasks:
+        _exit_with_message("no tasks match filter")
+    deleted = _delete_many(client, [task.uid for task in tasks])
     print(f"deleted {len(deleted)} tasks")
 
 
 def _handle_list(args: argparse.Namespace) -> None:
     config = _resolve_config(args.env)
-    force_refresh = _should_force_refresh()
-    tasks = _run_with_client(
-        args.env,
-        lambda client: client.list_tasks(force_refresh=force_refresh),
-    )
+    client = _cache_client(args.env)
+    tasks = client.list_tasks()
     if not tasks:
         print("no cached tasks found; run 'todo pull' to synchronize")
         return

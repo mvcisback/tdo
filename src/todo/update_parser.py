@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import FrozenSet
-
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
 
+from .update_descriptor import UpdateDescriptor
 
-__all__ = ["UpdateDescriptor", "parse_update"]
+
+__all__ = ["parse_update"]
 
 
 _UPDATE_GRAMMAR = Grammar(
@@ -28,16 +27,6 @@ _UPDATE_GRAMMAR = Grammar(
     ws = ~"[ \t\r\n]+"
     """,
 )
-
-
-@dataclass(frozen=True)
-class UpdateDescriptor:
-    index: int | None
-    add_tags: FrozenSet[str]
-    remove_tags: FrozenSet[str]
-    project: str | None
-    due: str | None
-    wait: str | None
 
 
 class _UpdateVisitor(NodeVisitor):

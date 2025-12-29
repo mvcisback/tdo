@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .update_parser import UpdateDescriptor
+from .update_descriptor import UpdateDescriptor
 
 __all__ = ["parse_update"]
 
