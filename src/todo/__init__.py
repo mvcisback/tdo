@@ -3,7 +3,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 
-__all__ = ["cli", "config", "caldav_client", "models", "update_parser", "time_parser"]
+__all__ = ["cli", "config", "caldav_client", "models", "sqlite_cache", "update_parser", "time_parser"]
 
 
 try:

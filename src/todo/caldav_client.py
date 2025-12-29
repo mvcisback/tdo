@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-import json
-import os
+import time
 from pathlib import Path
-from typing import Any, Dict, Sequence
+from time import perf_counter
+from typing import Dict
 from uuid import uuid4
 
 from caldav import DAVClient, Calendar
@@ -13,6 +13,30 @@ from caldav.objects import CalendarObjectResource
 
 from .config import CaldavConfig
 from .models import Task, TaskPatch, TaskPayload
+from .sqlite_cache import DirtyTask, SqliteTaskCache
+
+
+def _debug_log(stage: str, duration: float, info: str | None = None) -> None:
+    suffix = f" {info}" if info else ""
+    print(f"[timing] {stage}: {duration:.3f}s{suffix}")
+
+
+@dataclass
+class PullResult:
+    fetched: int
+
+
+@dataclass
+class PushResult:
+    created: int = 0
+    updated: int = 0
+    deleted: int = 0
+
+
+@dataclass
+class SyncResult:
+    pulled: PullResult
+    pushed: PushResult
 
 
 @dataclass
@@ -21,7 +45,10 @@ class CalDAVClient:
     cache_path: Path | None = field(default=None)
     client: DAVClient | None = field(default=None, init=False)
     calendar: Calendar | None = field(default=None, init=False)
-    _cached_tasks: list[Task] | None = field(default=None, init=False)
+    cache: SqliteTaskCache = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.cache = SqliteTaskCache(self.cache_path)
 
     def __enter__(self) -> CalDAVClient:
         self.client = DAVClient(
@@ -52,39 +79,42 @@ class CalDAVClient:
         self.calendar = None
 
     def list_tasks(self, force_refresh: bool = False) -> list[Task]:
-        if not force_refresh and self._cached_tasks is not None:
-            return list(self._cached_tasks)
-        if not force_refresh:
-            cached = self._read_cache()
-            if cached is not None:
-                self._cached_tasks = cached
-                return list(cached)
-        tasks = self._fetch_tasks()
-        self._cached_tasks = tasks
-        self._write_cache(tasks)
-        return list(tasks)
+        return self.cache.list_tasks()
 
     def create_task(self, payload: TaskPayload) -> Task:
-        calendar = self._ensure_calendar()
         uid = self._uid_from_summary(payload.summary)
-        body = self._build_ics(
-            payload.summary,
-            payload.due,
-            payload.priority,
-            payload.x_properties,
-            payload.categories,
-            uid,
-            payload.status,
+        categories = list(payload.categories) if payload.categories else []
+        task = Task(
+            uid=uid,
+            summary=payload.summary,
+            status=payload.status or "IN-PROCESS",
+            due=payload.due,
+            priority=payload.priority,
+            x_properties=dict(payload.x_properties),
+            categories=categories,
         )
-        todo = calendar.add_todo(body)
-        created = self._task_from_resource(todo)
-        self._invalidate_cache()
-        return created
+        self.cache.upsert_task(task, pending_action="create")
+        return task
 
     def modify_task(self, task: Task, patch: TaskPatch) -> Task:
-        calendar = self._ensure_calendar()
-        if not task.href:
-            raise KeyError(f"task {task.uid} missing href")
+        updated = self._apply_patch(task, patch)
+        pending_action = self.cache.get_pending_action(task.uid)
+        action = "create" if pending_action == "create" else "update"
+        self.cache.upsert_task(updated, pending_action=action)
+        return updated
+
+    def delete_task(self, uid: str) -> str:
+        task = self.cache.get_task(uid)
+        if task is None:
+            raise KeyError(f"task {uid} not found")
+        pending_action = self.cache.get_pending_action(uid)
+        if pending_action == "create":
+            self.cache.delete_task(uid)
+            return uid
+        self.cache.upsert_task(task, pending_action="delete", deleted=True)
+        return uid
+
+    def _apply_patch(self, task: Task, patch: TaskPatch) -> Task:
         summary = patch.summary or task.summary or task.uid
         due = patch.due if patch.due is not None else task.due
         priority = patch.priority if patch.priority is not None else task.priority
@@ -93,16 +123,7 @@ class CalDAVClient:
         x_properties.update(patch.x_properties)
         categories = patch.categories if patch.categories is not None else task.categories
         categories = list(categories)
-        body = self._build_ics(summary, due, priority, x_properties, categories, task.uid, status)
-        resource = CalendarObjectResource(
-            client=self.client,
-            url=task.href,
-            parent=calendar,
-        )
-        resource.id = task.uid
-        resource.data = body
-        resource.save()
-        updated = Task(
+        return Task(
             uid=task.uid,
             summary=summary,
             status=status,
@@ -112,26 +133,96 @@ class CalDAVClient:
             categories=categories,
             href=task.href,
         )
-        self._invalidate_cache()
-        return updated
 
-    def delete_task(self, uid: str) -> str:
+    def pull(self) -> PullResult:
+        start = perf_counter()
         calendar = self._ensure_calendar()
-        todo = calendar.todo_by_uid(uid)
-        if todo is None:
-            raise KeyError(f"todo {uid} not found")
-        todo.delete()
-        self._invalidate_cache()
-        return uid
+        resources = calendar.todos()
+        tasks = [self._task_from_resource(todo) for todo in resources]
+        self.cache.replace_remote_tasks(tasks)
+        elapsed = perf_counter() - start
+        _debug_log("pull", elapsed, f"count={len(tasks)}")
+        return PullResult(fetched=len(tasks))
+
+    def push(self) -> PushResult:
+        start = perf_counter()
+        pending = self.cache.dirty_tasks()
+        created = 0
+        updated = 0
+        deleted = 0
+        if pending:
+            calendar = self._ensure_calendar()
+            for entry in pending:
+                if entry.action == "create":
+                    created += 1
+                    synced = self._push_create(entry.task, calendar)
+                    self.cache.upsert_task(
+                        synced,
+                        last_synced=time.time(),
+                        clear_pending=True,
+                    )
+                    continue
+                if entry.action == "update":
+                    updated += 1
+                    synced = self._push_update(entry.task, calendar)
+                    self.cache.upsert_task(
+                        synced,
+                        last_synced=time.time(),
+                        clear_pending=True,
+                    )
+                    continue
+                deleted += 1
+                self._push_delete(entry.task, calendar)
+                self.cache.delete_task(entry.task.uid)
+        elapsed = perf_counter() - start
+        _debug_log("push", elapsed, f"pending={len(pending)}")
+        return PushResult(created=created, updated=updated, deleted=deleted)
+
+    def sync(self) -> SyncResult:
+        pulled = self.pull()
+        pushed = self.push()
+        return SyncResult(pulled=pulled, pushed=pushed)
 
     def _ensure_calendar(self) -> Calendar:
         if self.calendar is None:
             raise RuntimeError("caldav client is not initialized")
         return self.calendar
 
-    def _fetch_tasks(self) -> list[Task]:
-        calendar = self._ensure_calendar()
-        return [self._task_from_resource(todo) for todo in calendar.todos()]
+
+    def _push_create(self, task: Task, calendar: Calendar) -> Task:
+        body = self._build_ics(
+            task.summary,
+            task.due,
+            task.priority,
+            task.x_properties,
+            task.categories,
+            task.uid,
+            task.status,
+        )
+        todo = calendar.add_todo(body)
+        return self._task_from_resource(todo)
+
+    def _push_update(self, task: Task, calendar: Calendar) -> Task:
+        summary = task.summary or task.uid
+        body = self._build_ics(summary, task.due, task.priority, task.x_properties, task.categories, task.uid, task.status)
+        resource = self._resource_for_update(task, calendar)
+        resource.id = task.uid
+        resource.data = body
+        resource.save()
+        return self._task_from_resource(resource)
+
+    def _push_delete(self, task: Task, calendar: Calendar) -> None:
+        todo = calendar.todo_by_uid(task.uid)
+        if todo:
+            todo.delete()
+
+    def _resource_for_update(self, task: Task, calendar: Calendar) -> CalendarObjectResource:
+        if task.href:
+            return CalendarObjectResource(client=self.client, url=task.href, parent=calendar)
+        resource = calendar.todo_by_uid(task.uid)
+        if resource is None:
+            raise KeyError(f"task {task.uid} missing href")
+        return resource
 
     def _task_from_resource(self, resource: CalendarObjectResource) -> Task:
         task = self._task_from_data(resource.data or "")
@@ -224,86 +315,5 @@ class CalDAVClient:
     def _split_categories(self, raw: str) -> list[str]:
         return [candidate.strip() for candidate in raw.split(",") if candidate.strip()]
 
-    def _extract_summary(self, data: str) -> str | None:
-        for raw in data.splitlines():
-            if raw.strip().startswith("SUMMARY:"):
-                return raw.split(":", 1)[1]
-        return None
-
     def _uid_from_summary(self, summary: str) -> str:
         return f"{summary.replace(' ', '_')}-{uuid4()}"
-
-    def _cache_file_path(self) -> Path | None:
-        if self.cache_path:
-            return self.cache_path
-        override = os.environ.get("TODO_TASK_CACHE_FILE")
-        if override:
-            return Path(override)
-        try:
-            home = Path.home()
-        except OSError:
-            return None
-        return home / ".cache" / "todo" / "tasks.json"
-
-    def _read_cache(self) -> list[Task] | None:
-        path = self._cache_file_path()
-        if path is None or not path.exists():
-            return None
-        try:
-            payload = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
-            return None
-        entries = payload.get("tasks")
-        if not isinstance(entries, list):
-            return None
-        tasks: list[Task] = []
-        for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            tasks.append(self._deserialize_task(entry))
-        return tasks if tasks else None
-
-    def _write_cache(self, tasks: Sequence[Task]) -> None:
-        path = self._cache_file_path()
-        if path is None:
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"tasks": [self._serialize_task(task) for task in tasks]}
-            path.write_text(json.dumps(payload, indent=2))
-        except OSError:
-            return
-
-    def _serialize_task(self, task: Task) -> dict[str, Any]:
-        return {
-            "uid": task.uid,
-            "summary": task.summary,
-            "status": task.status,
-            "due": task.due.isoformat() if task.due else None,
-            "priority": task.priority,
-            "x_properties": task.x_properties,
-            "categories": task.categories,
-            "href": task.href,
-        }
-
-    def _deserialize_task(self, entry: dict[str, Any]) -> Task:
-        due_value = entry.get("due")
-        due: datetime | None = None
-        if isinstance(due_value, str):
-            try:
-                due = datetime.fromisoformat(due_value)
-            except ValueError:
-                pass
-        return Task(
-            uid=str(entry.get("uid") or ""),
-            summary=str(entry.get("summary") or ""),
-            status=str(entry.get("status") or "IN-PROCESS"),
-            due=due,
-            priority=entry.get("priority"),
-            x_properties=dict(entry.get("x_properties") or {}),
-            categories=list(entry.get("categories") or []),
-            href=entry.get("href"),
-        )
-
-    def _invalidate_cache(self) -> None:
-        self._cached_tasks = None

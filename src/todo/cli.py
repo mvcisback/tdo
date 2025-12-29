@@ -324,7 +324,7 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
     console.print(table)
 
 
-_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify"}
+_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "sync"}
 
 
 def _split_filter_and_command(argv: Sequence[str]) -> tuple[str | None, list[str]]:
@@ -456,7 +456,7 @@ def _handle_list(args: argparse.Namespace) -> None:
         lambda client: client.list_tasks(force_refresh=force_refresh),
     )
     if not tasks:
-        print("no tasks found")
+        print("no cached tasks found; run 'todo pull' to synchronize")
         return
     filtered_tasks = _select_tasks_for_filter(
         tasks,
@@ -466,6 +466,27 @@ def _handle_list(args: argparse.Namespace) -> None:
         print("no tasks match filter")
         return
     _pretty_print_tasks(filtered_tasks, config.show_uids)
+
+
+def _handle_pull(args: argparse.Namespace) -> None:
+    result = _run_with_client(args.env, lambda client: client.pull())
+    print(f"pulled {result.fetched} tasks")
+
+
+def _handle_push(args: argparse.Namespace) -> None:
+    result = _run_with_client(args.env, lambda client: client.push())
+    print(
+        f"pushed created={result.created} updated={result.updated} deleted={result.deleted}"
+    )
+
+
+def _handle_sync(args: argparse.Namespace) -> None:
+    result = _run_with_client(args.env, lambda client: client.sync())
+    print(
+        "sync pulled="
+        f"{result.pulled.fetched} created={result.pushed.created}"
+        f" updated={result.pushed.updated} deleted={result.pushed.deleted}"
+    )
 
 
 def _handle_config_init(args: argparse.Namespace) -> None:
@@ -521,6 +542,18 @@ def _build_parser() -> argparse.ArgumentParser:
     list_parser = subparsers.add_parser("list")
     list_parser.add_argument("--env", dest="env", help="env name")
     list_parser.set_defaults(func=_handle_list)
+
+    pull_parser = subparsers.add_parser("pull")
+    pull_parser.add_argument("--env", dest="env", help="env name")
+    pull_parser.set_defaults(func=_handle_pull)
+
+    push_parser = subparsers.add_parser("push")
+    push_parser.add_argument("--env", dest="env", help="env name")
+    push_parser.set_defaults(func=_handle_push)
+
+    sync_parser = subparsers.add_parser("sync")
+    sync_parser.add_argument("--env", dest="env", help="env name")
+    sync_parser.set_defaults(func=_handle_sync)
 
     config_parser = subparsers.add_parser("config")
     config_parser.set_defaults(func=_handle_config_help, parser=config_parser)
