@@ -1,3 +1,9 @@
+## 0.3.0 (2025-12-28)
+
+### Feat
+
+- Support keyring in order to avoid hardcoding password in config.
+
 ## 0.2.0 (2025-12-28)
 
 ### Feat
