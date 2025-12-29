@@ -2,6 +2,8 @@
 
 An async Python CLI inspired by Taskwarrior semantics that stores tasks on CalDAV servers while preserving X-Properties. Tasks stay cached locally so the CLI stays fast even when the remote backend is slow, and rich metadata (sort order, Kanban states, time-tracking) is preserved for downstream clients such as Apple Calendar, Tasks.org, and Deck.
 
+> **Warning:** This repository contains LLM-assisted code and the project is still under heavy development; APIs, CLI behavior, and storage formats may change without notice.
+
 ## Highlights
 
 - Taskwarrior-style syntax for adding, modifying, tagging, and categorizing tasks.
