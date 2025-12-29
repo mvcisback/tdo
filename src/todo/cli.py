@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, NoReturn, Sequence, TypeVar
 
-from parsimonious.exceptions import ParseError
 from rich import box
 from rich.console import Console
 from rich.table import Table
@@ -23,7 +22,8 @@ from .config import (
 )
 from .models import Task, TaskPatch, TaskPayload
 from .time_parser import parse_due_value, parse_wait_value
-from .update_parser import UpdateDescriptor, parse_update
+from .update_linear_parser import parse_update
+from .update_parser import UpdateDescriptor
 
 
 T = TypeVar("T")
@@ -115,10 +115,7 @@ def _parse_metadata(tokens: Sequence[str]) -> UpdateMetadata:
 
 def _parse_update_descriptor(tokens: Sequence[str]) -> UpdateDescriptor:
     raw = " ".join(token.strip() for token in tokens if token and token.strip())
-    try:
-        return parse_update(raw)
-    except ParseError as exc:
-        _exit_with_message(f"unable to parse update arguments: {exc}")
+    return parse_update(raw)
 
 
 def _resolve_due_value(raw: str | None) -> datetime | None:

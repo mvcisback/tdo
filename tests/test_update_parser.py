@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import random
 
-from todo.update_parser import UpdateDescriptor, parse_update
+from todo.update_linear_parser import parse_update as parse_update_linear
+from todo.update_parser import UpdateDescriptor, parse_update as parse_update_grammar
+
+parse_update = parse_update_linear
 
 
 def test_parse_modify_input() -> None:
@@ -121,6 +124,11 @@ def test_parse_update_matches_simulation_for_random_inputs() -> None:
     for raw in _generate_fuzz_inputs(seed=0):
         expected = _simulate_descriptor(raw)
         assert parse_update(raw) == expected
+
+
+def test_linear_parser_matches_grammar_for_random_inputs() -> None:
+    for raw in _generate_fuzz_inputs(seed=1):
+        assert parse_update_linear(raw) == parse_update_grammar(raw)
 
 
 _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
