@@ -435,11 +435,37 @@ def _normalize_tokens(tokens: Sequence[str] | None) -> list[str]:
     return [token for token in tokens or [] if token != "--"]
 
 
+def _is_metadata_token(token: str) -> bool:
+    candidate = token.strip()
+    if not candidate:
+        return False
+    if candidate.startswith(("+", "-")) and len(candidate) > 1:
+        return True
+    if ":" in candidate:
+        return True
+    return False
+
+
+def _split_description_and_metadata(initial: str, tokens: Sequence[str]) -> tuple[str, list[str]]:
+    description_parts = [initial]
+    metadata_tokens: list[str] = []
+    metadata_started = False
+    for token in tokens:
+        if metadata_started or _is_metadata_token(token):
+            metadata_started = True
+            metadata_tokens.append(token)
+            continue
+        description_parts.append(token)
+    description = " ".join(part for part in description_parts if part.strip())
+    return description, metadata_tokens
+
+
 def _handle_add(args: argparse.Namespace) -> None:
     tokens = _normalize_tokens(args.tokens)
-    descriptor = _parse_update_descriptor(tokens)
-    metadata = _parse_metadata(tokens)
-    payload = _build_payload(args.description, descriptor, metadata)
+    description, descriptor_tokens = _split_description_and_metadata(args.description, tokens)
+    descriptor = _parse_update_descriptor(descriptor_tokens)
+    metadata = _parse_metadata(descriptor_tokens)
+    payload = _build_payload(description, descriptor, metadata)
     client = _cache_client(args.env)
     created = client.create_task(payload)
     print(created.uid)

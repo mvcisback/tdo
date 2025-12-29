@@ -133,6 +133,14 @@ def test_add_command_parses_tags_and_project() -> None:
     assert payload.due == datetime(2025, 1, 1, 3, 0, 0)
 
 
+def test_add_command_supports_multi_word_description() -> None:
+    exit_code, stdout = run_cli(["add", "multi", "word", "description"])
+    assert exit_code == 0
+    payload = DummyClient.last_payload
+    assert payload is not None
+    assert payload.summary == "multi word description"
+
+
 def test_modify_command_accepts_summary_patch() -> None:
     exit_code, stdout = run_cli(["modify", "existing", "summary:Updated", "pri:L"])
     assert exit_code == 0
