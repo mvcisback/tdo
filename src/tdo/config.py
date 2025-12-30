@@ -17,7 +17,7 @@ class CaldavConfig:
     username: str
     password: str | None = None
     token: str | None = None
-    keyring_service: str | None = None
+    keyring_service: str = "tdo"
     show_uids: bool = False
 
     def getpass(self):
@@ -118,9 +118,10 @@ def load_config(env: str | None = None, config_home: Path | None = None) -> Cald
         "username": os.environ.get("TDO_USERNAME"),
         "password": os.environ.get("TDO_PASSWORD"),
         "token": os.environ.get("TDO_TOKEN"),
-        "keyring_service": os.environ.get("TDO_KEYRING_SERVICE"),
+        "keyring_service": os.environ.get("TDO_KEYRING_SERVICE", "tdo"),
         "show_uids": os.environ.get("TDO_SHOW_UIDS"),
     }
+
     path = config_file_path(env, config_home)
     if not path.exists():
         legacy = path.with_suffix("")

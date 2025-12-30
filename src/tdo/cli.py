@@ -49,6 +49,8 @@ def _cache_client(env: str | None) -> "CalDAVClient":
 
 
 def _resolve_config(env: str | None) -> CaldavConfig:
+    if env is None:
+        env = "default"
     config_path = os.environ.get("TDO_CONFIG_FILE")
     if config_path:
         return load_config_from_path(Path(config_path).expanduser())
