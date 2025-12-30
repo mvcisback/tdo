@@ -54,8 +54,8 @@ def _parse_list(raw: str | None) -> list[str]:
 
 
 class SqliteTaskCache:
-    def __init__(self, path: Path | None = None):
-        resolved = self._resolve_path(path)
+    def __init__(self, path: Path | None = None, *, env: str = "default"):
+        resolved = self._resolve_path(path, env)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.path = resolved
         self._conn = sqlite3.connect(
@@ -68,7 +68,7 @@ class SqliteTaskCache:
         self._ensure_schema()
 
     @staticmethod
-    def _resolve_path(path: Path | None) -> Path:
+    def _resolve_path(path: Path | None, env: str) -> Path:
         if path:
             return path.expanduser()
         override = os.environ.get("TDO_TASK_CACHE_FILE")
@@ -78,7 +78,18 @@ class SqliteTaskCache:
             base = Path.home()
         except OSError:
             base = Path.cwd()
-        return base / ".cache" / "tdo" / "tasks.db"
+        safe_env = SqliteTaskCache._normalize_env(env)
+        return base / ".cache" / "tdo" / safe_env / "tasks.db"
+
+    @staticmethod
+    def _normalize_env(env: str | None) -> str:
+        candidate = (env or "").strip()
+        if not candidate:
+            return "default"
+        normalized = Path(candidate).name
+        if not normalized:
+            return "default"
+        return normalized
 
     def _ensure_schema(self) -> None:
         script = """

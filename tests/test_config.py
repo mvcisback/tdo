@@ -14,7 +14,7 @@ CONFIG = CaldavConfig(
     username="tester",
     password="secret",
     token="tok",
-    keyring_service="tdo-service",
+    env="test",
 )
 
 
@@ -33,7 +33,7 @@ def test_write_config_file_persists_values(tmp_path: Path) -> None:
     assert "username = \"tester\"" in text
     assert "password = \"secret\"" in text
     assert "token = \"tok\"" in text
-    assert "keyring_service = \"tdo-service\"" in text
+    assert "env = \"test\"" in text
 
 
 def test_write_config_file_requires_force(tmp_path: Path) -> None:
@@ -61,45 +61,3 @@ def test_load_config_supports_legacy_format(tmp_path: Path) -> None:
     loaded = load_config(env="legacy", config_home=home)
     assert loaded.username == "alice"
     assert loaded.calendar_url == "https://example.com"
-
-
-def test_load_config_fetches_password_from_keyring(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home = tmp_path
-    target = config_file_path("secure", config_home=home)
-    write_config_file(
-        target,
-        CaldavConfig(
-            calendar_url="https://example.com",
-            username="alice",
-            keyring_service="tdo-service",
-        ),
-        force=True,
-    )
-    fake_keyring = SimpleNamespace(get_password=lambda service, username: "retrieved-secret")
-    monkeypatch.setitem(sys.modules, "keyring", fake_keyring)
-    loaded = load_config(env="secure", config_home=home)
-    assert loaded.password == "retrieved-secret"
-    assert loaded.keyring_service == "tdo-service"
-
-
-def test_keyring_overrides_existing_password(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home = tmp_path
-    target = config_file_path("secure", config_home=home)
-    write_config_file(
-        target,
-        CaldavConfig(
-            calendar_url="https://example.com",
-            username="alice",
-            password="stored",
-            keyring_service="tdo-service",
-        ),
-        force=True,
-    )
-    fake_keyring = SimpleNamespace(get_password=lambda service, username: "new-secret")
-    monkeypatch.setitem(sys.modules, "keyring", fake_keyring)
-    loaded = load_config(env="secure", config_home=home)
-    assert loaded.password == "new-secret"

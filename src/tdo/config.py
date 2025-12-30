@@ -36,7 +36,9 @@ class CaldavConfig:
 
 
 def resolve_env(env: str | None = None) -> str:
-    return env or os.environ.get("TDO_ENV") or "default"
+    if env is not None:
+        return env
+    return os.environ.get("TDO_ENV", "default")
 
 
 def config_file_path(env: str | None = None, config_home: Path | None = None) -> Path:
@@ -58,7 +60,7 @@ def write_config_file(path: Path, config: CaldavConfig, *, force: bool = False) 
     if config.token:
         lines.append(f"token = {json.dumps(config.token)}")
     if config.env:
-        lines.append(f"keyring_service = {json.dumps(config.env)}")
+        lines.append(f"env = {json.dumps(config.env)}")
     path.write_text("\n".join(lines) + "\n")
     return path
 
@@ -118,6 +120,7 @@ def _parse_bool_like(value: str | bool | None) -> bool | None:
 
 
 def load_config(env: str | None = None, config_home: Path | None = None) -> CaldavConfig:
+    resolved_env = resolve_env(env)
     values = {
         "calendar_url": os.environ.get("TDO_CALDAV_URL"),
         "username": os.environ.get("TDO_USERNAME"),
@@ -126,7 +129,7 @@ def load_config(env: str | None = None, config_home: Path | None = None) -> Cald
         "show_uids": os.environ.get("TDO_SHOW_UIDS"),
     }
 
-    path = config_file_path(env, config_home)
+    path = config_file_path(resolved_env, config_home)
     if not path.exists():
         legacy = path.with_suffix("")
         if legacy.exists():
@@ -134,31 +137,31 @@ def load_config(env: str | None = None, config_home: Path | None = None) -> Cald
     if path.exists():
         file_values = _load_file_values(path)
         values.update(file_values)
-    return _build_config(values)
+    return _build_config(values, resolved_env)
 
 
-def load_config_from_path(path: Path) -> CaldavConfig:
+def load_config_from_path(path: Path, env: str | None = None) -> CaldavConfig:
     if not path.exists():
         raise FileNotFoundError(f"config file not found: {path}")
     values = _load_file_values(path)
-    return _build_config(values)
+    resolved_env = resolve_env(env)
+    return _build_config(values, resolved_env)
 
 
-def _build_config(values: dict[str, str | bool | None]) -> CaldavConfig:
+def _build_config(values: dict[str, str | bool | None], resolved_env: str) -> CaldavConfig:
     url = values.get("calendar_url")
     username = values.get("username")
     password = values.get("password")
     token = values.get("token")
-    env = values.get("env", "default")
     show_uids = _parse_bool_like(values.get("show_uids"))
     if not url or not username:
         raise RuntimeError("caldav configuration requires calendar_url and username")
-         
+
     return CaldavConfig(
         calendar_url=url,
         username=username,
         password=password,
         token=token,
-        env=env,
+        env=resolved_env,
         show_uids=show_uids if show_uids is not None else False,
     )

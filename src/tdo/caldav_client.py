@@ -49,7 +49,8 @@ class CalDAVClient:
     cache: SqliteTaskCache = field(init=False)
 
     def __post_init__(self) -> None:
-        self.cache = SqliteTaskCache(self.cache_path)
+        env = self.config.env or "default"
+        self.cache = SqliteTaskCache(self.cache_path, env=env)
 
     def __enter__(self) -> CalDAVClient:
         from caldav import DAVClient

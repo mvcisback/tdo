@@ -254,7 +254,7 @@ def test_list_command_shows_uids_when_enabled(tmp_path, monkeypatch: pytest.Monk
         "[caldav]\ncalendar_url = \"https://example.com/cal\"\nusername = \"tester\"\nshow_uids = true\n"
     )
 
-    def fake_load(path: Path) -> CaldavConfig:
+    def fake_load(path: Path, env: str | None = None) -> CaldavConfig:
         return CaldavConfig(
             calendar_url="https://example.com/cal",
             username="tester",
@@ -274,7 +274,7 @@ def test_list_command_accepts_config_file(tmp_path, monkeypatch: pytest.MonkeyPa
     )
     called: list[Path] = []
 
-    def fake_load(path: Path) -> CaldavConfig:
+    def fake_load(path: Path, env: str | None = None) -> CaldavConfig:
         called.append(path)
         return CaldavConfig(calendar_url="https://example.com/cal", username="tester")
 
@@ -303,8 +303,8 @@ def test_config_init_command_writes_file(tmp_path) -> None:
             "secret",
             "--token",
             "tok",
-            "--keyring-service",
-            "tdo-service",
+            "--env",
+            "test",
             "--force",
         ]
     )
@@ -316,4 +316,4 @@ def test_config_init_command_writes_file(tmp_path) -> None:
     assert "username = \"tester\"" in contents
     assert "password = \"secret\"" in contents
     assert "token = \"tok\"" in contents
-    assert "keyring_service = \"tdo-service\"" in contents
+    assert "env = \"test\"" in contents
