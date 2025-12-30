@@ -11,8 +11,7 @@ __all__ = ["parse_update"]
 
 _UPDATE_GRAMMAR = Grammar(
     r"""
-    update = ws? index_part? ws? segments? ws?
-    index_part = index
+    update = ws? segments? ws?
     segments = part (ws part)*
     part = add_tag / remove_tag / project / due / wait / word
     add_tag = "+" tagname
@@ -23,7 +22,6 @@ _UPDATE_GRAMMAR = Grammar(
     tagname = ~"[^ \t\r\n]+"
     value = ~"[^ \t\r\n]*"
     word = ~"[^ \t\r\n]+"
-    index = ~"[0-9]+"
     ws = ~"[ \t\r\n]+"
     """,
 )
@@ -32,17 +30,11 @@ _UPDATE_GRAMMAR = Grammar(
 class _UpdateVisitor(NodeVisitor):
     def __init__(self) -> None:
         super().__init__()
-        self.index: int | None = None
         self._additions: list[str] = []
         self._removals: list[str] = []
         self.project: str | None = None
         self.due: str | None = None
         self.wait: str | None = None
-
-    def visit_index(self, node, _visited_children):
-        if self.index is None and node.text:
-            self.index = int(node.text)
-        return None
 
     def visit_add_tag(self, _node, visited_children):
         _, tag = visited_children
@@ -85,7 +77,6 @@ class _UpdateVisitor(NodeVisitor):
             additions -= collision
             removals -= collision
         return UpdateDescriptor(
-            index=self.index,
             add_tags=frozenset(additions),
             remove_tags=frozenset(removals),
             project=self.project,

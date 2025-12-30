@@ -10,8 +10,7 @@ parse_update = parse_update_linear
 
 
 def test_parse_modify_input() -> None:
-    descriptor = parse_update("4 -tag3 +email pri:")
-    assert descriptor.index == 4
+    descriptor = parse_update("-tag3 +email pri:")
     assert descriptor.add_tags == frozenset({"email"})
     assert descriptor.remove_tags == frozenset({"tag3"})
     assert descriptor.project is None
@@ -20,7 +19,6 @@ def test_parse_modify_input() -> None:
 
 def test_parse_add_input_with_description() -> None:
     descriptor = parse_update("my task description +tag1 +tag2 project:work due:eod")
-    assert descriptor.index is None
     assert descriptor.add_tags == frozenset({"tag1", "tag2"})
     assert descriptor.remove_tags == frozenset()
     assert descriptor.project == "work"
@@ -65,16 +63,12 @@ _TOKEN_OPTIONS = [
 
 def _simulate_descriptor(raw: str) -> UpdateDescriptor:
     tokens = [token for token in raw.strip().split() if token]
-    index: int | None = None
     additions: list[str] = []
     removals: list[str] = []
     project: str | None = None
     due: str | None = None
     wait: str | None = None
-    for position, token in enumerate(tokens):
-        if position == 0 and token.isdigit():
-            index = int(token)
-            continue
+    for token in tokens:
         if token.startswith("+") and len(token) > 1:
             additions.append(token[1:])
             continue
@@ -99,7 +93,6 @@ def _simulate_descriptor(raw: str) -> UpdateDescriptor:
     addition_set -= collision
     removal_set -= collision
     return UpdateDescriptor(
-        index=index,
         add_tags=frozenset(addition_set),
         remove_tags=frozenset(removal_set),
         project=project,
@@ -113,8 +106,6 @@ def _generate_fuzz_inputs(seed: int = 0) -> list[str]:
     samples: list[str] = []
     for _ in range(256):
         tokens: list[str] = []
-        if rng.random() < 0.35:
-            tokens.append(str(rng.randint(1, 99)))
         for _ in range(rng.randint(0, 6)):
             tokens.append(rng.choice(_TOKEN_OPTIONS))
         samples.append(" ".join(tokens))
@@ -134,9 +125,8 @@ def test_linear_parser_matches_grammar_for_random_inputs() -> None:
 
 _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
     (
-        "3 +alpha -beta project:home due:2025-12-01",
+        "+alpha -beta project:home due:2025-12-01",
         UpdateDescriptor(
-            index=3,
             add_tags=frozenset({"alpha"}),
             remove_tags=frozenset({"beta"}),
             project="home",
@@ -147,7 +137,6 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
     (
         "grocery list +food -junk project:",
         UpdateDescriptor(
-            index=None,
             add_tags=frozenset({"food"}),
             remove_tags=frozenset({"junk"}),
             project=None,
@@ -156,9 +145,8 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
         ),
     ),
     (
-        "12 +urgent +urgent -urgent due:tomorrow",
+        "+urgent +urgent -urgent due:tomorrow",
         UpdateDescriptor(
-            index=12,
             add_tags=frozenset(),
             remove_tags=frozenset(),
             project=None,
@@ -167,9 +155,8 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
         ),
     ),
     (
-        "42 -old +new +alpha project:work status:done",
+        "-old +new +alpha project:work status:done",
         UpdateDescriptor(
-            index=42,
             add_tags=frozenset({"new", "alpha"}),
             remove_tags=frozenset({"old"}),
             project="work",
@@ -180,7 +167,6 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
     (
         "due:eod +tag -tag review",
         UpdateDescriptor(
-            index=None,
             add_tags=frozenset(),
             remove_tags=frozenset(),
             project=None,
@@ -189,9 +175,8 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
         ),
     ),
     (
-        "4 wait:2d +alpha -beta",
+        "wait:2d +alpha -beta",
         UpdateDescriptor(
-            index=4,
             add_tags=frozenset({"alpha"}),
             remove_tags=frozenset({"beta"}),
             project=None,

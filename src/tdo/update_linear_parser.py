@@ -7,17 +7,13 @@ __all__ = ["parse_update"]
 
 def parse_update(raw: str) -> UpdateDescriptor:
     tokens = [segment for segment in raw.strip().split() if segment]
-    index: int | None = None
     additions: list[str] = []
     removals: list[str] = []
     project: str | None = None
     due: str | None = None
     wait: str | None = None
 
-    for position, token in enumerate(tokens):
-        if position == 0 and token.isdigit():
-            index = int(token)
-            continue
+    for token in tokens:
         if token.startswith("+") and len(token) > 1:
             additions.append(token[1:])
             continue
@@ -44,7 +40,6 @@ def parse_update(raw: str) -> UpdateDescriptor:
     removal_set -= collision
 
     return UpdateDescriptor(
-        index=index,
         add_tags=frozenset(addition_set),
         remove_tags=frozenset(removal_set),
         project=project,
