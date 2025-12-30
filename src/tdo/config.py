@@ -17,8 +17,12 @@ class CaldavConfig:
     username: str
     password: str | None = None
     token: str | None = None
-    keyring_service: str = "tdo"
+    env: str = "default"
     show_uids: bool = False
+
+    @property
+    def keyring_service(self) -> str:
+        return f"tdo-{self.env}"
 
     def getpass(self):
         password = self.password
@@ -42,6 +46,7 @@ def config_file_path(env: str | None = None, config_home: Path | None = None) ->
 
 
 def write_config_file(path: Path, config: CaldavConfig, *, force: bool = False) -> Path:
+    # TODO: Use built in dataclass -> dict for this.
     if path.exists() and not force:
         raise FileExistsError(f"{path} already exists")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -52,8 +57,8 @@ def write_config_file(path: Path, config: CaldavConfig, *, force: bool = False) 
         lines.append(f"password = {json.dumps(config.password)}")
     if config.token:
         lines.append(f"token = {json.dumps(config.token)}")
-    if config.keyring_service:
-        lines.append(f"keyring_service = {json.dumps(config.keyring_service)}")
+    if config.env:
+        lines.append(f"keyring_service = {json.dumps(config.env)}")
     path.write_text("\n".join(lines) + "\n")
     return path
 
@@ -118,7 +123,6 @@ def load_config(env: str | None = None, config_home: Path | None = None) -> Cald
         "username": os.environ.get("TDO_USERNAME"),
         "password": os.environ.get("TDO_PASSWORD"),
         "token": os.environ.get("TDO_TOKEN"),
-        "keyring_service": os.environ.get("TDO_KEYRING_SERVICE", "tdo"),
         "show_uids": os.environ.get("TDO_SHOW_UIDS"),
     }
 
@@ -145,7 +149,7 @@ def _build_config(values: dict[str, str | bool | None]) -> CaldavConfig:
     username = values.get("username")
     password = values.get("password")
     token = values.get("token")
-    keyring_service = values.get("keyring_service", "tdo")
+    env = values.get("env", "default")
     show_uids = _parse_bool_like(values.get("show_uids"))
     if not url or not username:
         raise RuntimeError("caldav configuration requires calendar_url and username")
@@ -155,6 +159,6 @@ def _build_config(values: dict[str, str | bool | None]) -> CaldavConfig:
         username=username,
         password=password,
         token=token,
-        keyring_service=keyring_service,
+        env=env,
         show_uids=show_uids if show_uids is not None else False,
     )

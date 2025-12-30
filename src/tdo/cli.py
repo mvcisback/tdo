@@ -571,13 +571,13 @@ def _handle_config_init(args: argparse.Namespace) -> None:
     username_value = _require_value(args.username, "CalDAV username")
     password_value = args.password if args.password else None
     token_value = args.token if args.token else None
-    keyring_service_value = args.keyring_service if args.keyring_service else "tdo"
+    env = args.env if args.env else "default"
     config = CaldavConfig(
         calendar_url=calendar_url_value,
         username=username_value,
         password=password_value,
         token=token_value,
-        keyring_service=keyring_service_value,
+        env=env
     )
     try:
         path = write_config_file(target, config, force=args.force)
@@ -649,7 +649,6 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--username", dest="username", help="CalDAV username")
     init_parser.add_argument("--password", dest="password", help="CalDAV password")
     init_parser.add_argument("--token", dest="token", help="CalDAV token")
-    init_parser.add_argument("--keyring-service", dest="keyring_service", help="service name used when fetching the password from a keyring")
     init_parser.add_argument("--force", dest="force", action="store_true", help="overwrite existing config")
     init_parser.set_defaults(func=_handle_config_init, parser=config_parser)
 
