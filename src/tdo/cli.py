@@ -315,7 +315,7 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
         box=box.SIMPLE_HEAVY,
         show_header=True,
         header_style="bold cyan",
-        row_styles=["", "dim"],
+        row_styles=["", "on grey23"],
         padding=(0, 1),
     )
     column_specs = list(_BASE_COLUMN_SPECS)
