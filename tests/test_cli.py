@@ -141,6 +141,26 @@ def test_add_command_supports_multi_word_description() -> None:
     assert payload.summary == "multi word description"
 
 
+def test_add_command_allows_description_tokens_after_metadata() -> None:
+    exit_code, stdout = run_cli(
+        [
+            "add",
+            "first",
+            "+tag",
+            "later",
+            "words",
+            "project:work",
+        ]
+    )
+    assert exit_code == 0
+    payload = DummyClient.last_payload
+    assert payload is not None
+    assert payload.summary == "first later words"
+    assert payload.x_properties.get("X-PROJECT") == "work"
+    assert payload.categories
+    assert set(payload.categories) == {"tag"}
+
+
 def test_modify_command_accepts_summary_patch() -> None:
     exit_code, stdout = run_cli(["modify", "existing", "summary:Updated", "pri:L"])
     assert exit_code == 0

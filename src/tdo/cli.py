@@ -446,23 +446,21 @@ def _is_metadata_token(token: str) -> bool:
     return False
 
 
-def _split_description_and_metadata(initial: str, tokens: Sequence[str]) -> tuple[str, list[str]]:
-    description_parts = [initial]
-    metadata_tokens: list[str] = []
-    metadata_started = False
+def _split_description_and_metadata(tokens: Sequence[str]) -> tuple[str, list[str]]:
+    description_parts: list[str] = []
+    metadata_tokens: set[str] = set()
     for token in tokens:
-        if metadata_started or _is_metadata_token(token):
-            metadata_started = True
-            metadata_tokens.append(token)
-            continue
-        description_parts.append(token)
+        if _is_metadata_token(token):
+            metadata_tokens.add(token)
+        else:
+            description_parts.append(token)
     description = " ".join(part for part in description_parts if part.strip())
-    return description, metadata_tokens
+    return description, list(metadata_tokens)
 
 
 def _handle_add(args: argparse.Namespace) -> None:
     tokens = _normalize_tokens(args.tokens)
-    description, descriptor_tokens = _split_description_and_metadata(args.description, tokens)
+    description, descriptor_tokens = _split_description_and_metadata(tokens)
     descriptor = _parse_update_descriptor(descriptor_tokens)
     metadata = _parse_metadata(descriptor_tokens)
     payload = _build_payload(description, descriptor, metadata)
@@ -598,7 +596,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     add_parser = subparsers.add_parser("add")
     add_parser.add_argument("--env", dest="env", help="env name")
-    add_parser.add_argument("description", help="task description")
     add_parser.add_argument("tokens", nargs=argparse.REMAINDER, default=[], help="taskwarrior tokens")
     add_parser.set_defaults(func=_handle_add)
 
