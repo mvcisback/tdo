@@ -55,12 +55,7 @@ def _resolve_config(env: str | None) -> CaldavConfig:
     return load_config(env)
 
 
-@dataclass
-class UpdateMetadata:
-    priority: int | None = None
-    status: str | None = None
-    summary: str | None = None
-    x_properties: dict[str, str] = field(default_factory=dict)
+
 
 
 def _split_categories_value(raw: str | None) -> list[str]:
@@ -99,30 +94,7 @@ def _parse_priority(raw: str) -> int | None:
         return None
 
 
-def _parse_metadata(tokens: Sequence[str]) -> UpdateMetadata:
-    metadata = UpdateMetadata()
-    for token in tokens:
-        candidate = token.strip()
-        if not candidate or ":" not in candidate:
-            continue
-        key, rest = candidate.split(":", 1)
-        key_lower = key.strip().lower()
-        value = rest.strip()
-        if key_lower == "pri":
-            priority = _parse_priority(value)
-            if priority is not None:
-                metadata.priority = priority
-            continue
-        if key_lower == "status":
-            metadata.status = value.upper() if value else None
-            continue
-        if key_lower == "summary":
-            metadata.summary = rest
-            continue
-        if key_lower == "x" and ":" in rest:
-            prop_key, prop_value = rest.split(":", 1)
-            metadata.x_properties[prop_key] = prop_value
-    return metadata
+
 
 
 def _parse_update_descriptor(tokens: Sequence[str]) -> UpdateDescriptor:
@@ -150,12 +122,12 @@ def _apply_tag_changes(existing: Sequence[str] | None, descriptor: UpdateDescrip
     return sorted(normalized)
 
 
-def _has_update_candidates(descriptor: UpdateDescriptor, metadata: UpdateMetadata) -> bool:
+def _has_update_candidates(descriptor: UpdateDescriptor) -> bool:
     return bool(
-        metadata.summary
-        or metadata.priority is not None
-        or metadata.status
-        or metadata.x_properties
+        descriptor.summary
+        or descriptor.priority is not None
+        or descriptor.status
+        or descriptor.x_properties
         or descriptor.project
         or descriptor.due
         or descriptor.wait
@@ -164,10 +136,10 @@ def _has_update_candidates(descriptor: UpdateDescriptor, metadata: UpdateMetadat
     )
 
 
-def _build_payload(description: str, descriptor: UpdateDescriptor, metadata: UpdateMetadata) -> TaskPayload:
-    summary = metadata.summary or description
+def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
+    summary = descriptor.summary or descriptor.description
     due = _resolve_due_value(descriptor.due)
-    x_properties = dict(metadata.x_properties)
+    x_properties = dict(descriptor.x_properties)
     raw_categories = x_properties.pop("CATEGORIES", None)
     metadata_categories = _split_categories_value(raw_categories)
     base_categories = metadata_categories if raw_categories is not None else None
@@ -184,25 +156,25 @@ def _build_payload(description: str, descriptor: UpdateDescriptor, metadata: Upd
             x_properties["X-WAIT"] = wait_value
     return TaskPayload(
         summary=summary,
-        priority=metadata.priority,
+        priority=descriptor.priority,
         due=due,
-        status=metadata.status or "IN-PROCESS",
+        status=descriptor.status or "IN-PROCESS",
         x_properties=x_properties,
         categories=categories if categories else None,
     )
 
 
 def _build_patch_from_descriptor(
-    descriptor: UpdateDescriptor, metadata: UpdateMetadata, existing: Task | None
+    descriptor: UpdateDescriptor, existing: Task | None
 ) -> TaskPatch:
     due = _resolve_due_value(descriptor.due)
     patch = TaskPatch(
-        summary=metadata.summary,
-        priority=metadata.priority,
+        summary=descriptor.summary,
+        priority=descriptor.priority,
         due=due,
-        status=metadata.status,
+        status=descriptor.status,
     )
-    x_properties = dict(metadata.x_properties)
+    x_properties = dict(descriptor.x_properties)
     raw_categories = x_properties.pop("CATEGORIES", None)
     metadata_categories = _split_categories_value(raw_categories)
     metadata_provided = raw_categories is not None
@@ -435,35 +407,13 @@ def _normalize_tokens(tokens: Sequence[str] | None) -> list[str]:
     return [token for token in tokens or [] if token != "--"]
 
 
-def _is_metadata_token(token: str) -> bool:
-    candidate = token.strip()
-    if not candidate:
-        return False
-    if candidate.startswith(("+", "-")) and len(candidate) > 1:
-        return True
-    if ":" in candidate:
-        return True
-    return False
 
-
-def _split_description_and_metadata(tokens: Sequence[str]) -> tuple[str, list[str]]:
-    description_parts: list[str] = []
-    metadata_tokens: set[str] = set()
-    for token in tokens:
-        if _is_metadata_token(token):
-            metadata_tokens.add(token)
-        else:
-            description_parts.append(token)
-    description = " ".join(part for part in description_parts if part.strip())
-    return description, list(metadata_tokens)
 
 
 def _handle_add(args: argparse.Namespace) -> None:
     tokens = _normalize_tokens(args.tokens)
-    description, descriptor_tokens = _split_description_and_metadata(tokens)
-    descriptor = _parse_update_descriptor(descriptor_tokens)
-    metadata = _parse_metadata(descriptor_tokens)
-    payload = _build_payload(description, descriptor, metadata)
+    descriptor = _parse_update_descriptor(tokens)
+    payload = _build_payload(descriptor)
     client = _cache_client(args.env)
     created = client.create_task(payload)
     print(created.uid)
@@ -472,8 +422,7 @@ def _handle_add(args: argparse.Namespace) -> None:
 def _handle_modify(args: argparse.Namespace) -> None:
     tokens = _normalize_tokens(args.tokens)
     descriptor = _parse_update_descriptor(tokens)
-    metadata = _parse_metadata(tokens)
-    if not _has_update_candidates(descriptor, metadata):
+    if not _has_update_candidates(descriptor):
         _exit_with_message("no changes provided")
     client = _cache_client(args.env)
     tasks = _select_tasks_for_filter(
@@ -484,7 +433,7 @@ def _handle_modify(args: argparse.Namespace) -> None:
         _exit_with_message("no tasks match filter")
     modified = 0
     for task in tasks:
-        patch = _build_patch_from_descriptor(descriptor, metadata, task)
+        patch = _build_patch_from_descriptor(descriptor, task)
         if not patch.has_changes():
             continue
         client.modify_task(task, patch)

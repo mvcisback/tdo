@@ -63,11 +63,17 @@ _TOKEN_OPTIONS = [
 
 def _simulate_descriptor(raw: str) -> UpdateDescriptor:
     tokens = [token for token in raw.strip().split() if token]
+    description_parts: list[str] = []
     additions: list[str] = []
     removals: list[str] = []
     project: str | None = None
     due: str | None = None
     wait: str | None = None
+    priority: int | None = None
+    status: str | None = None
+    summary: str | None = None
+    x_properties: dict[str, str] = {}
+    
     for token in tokens:
         if token.startswith("+") and len(token) > 1:
             additions.append(token[1:])
@@ -75,29 +81,58 @@ def _simulate_descriptor(raw: str) -> UpdateDescriptor:
         if token.startswith("-") and len(token) > 1:
             removals.append(token[1:])
             continue
-        if token.startswith("project:"):
-            value = token.split(":", 1)[1]
-            project = value or None
-            continue
-        if token.startswith("due:"):
-            value = token.split(":", 1)[1]
-            due = value or None
-            continue
-        if token.startswith("wait:"):
-            value = token.split(":", 1)[1]
-            wait = value or None
-            continue
+        if ":" in token:
+            key, rest = token.split(":", 1)
+            key_lower = key.strip().lower()
+            value = rest.strip()
+            
+            if key_lower == "project":
+                project = value or None
+                continue
+            if key_lower == "due":
+                due = value or None
+                continue
+            if key_lower == "wait":
+                wait = value or None
+                continue
+            if key_lower == "pri":
+                try:
+                    priority = int(value) if value else None
+                except ValueError:
+                    pass
+                continue
+            if key_lower == "status":
+                status = value.upper() if value else None
+                continue
+            if key_lower == "summary":
+                summary = rest
+                continue
+            if key_lower == "x" and ":" in rest:
+                prop_key, prop_value = rest.split(":", 1)
+                x_properties[prop_key] = prop_value
+                continue
+        
+        description_parts.append(token)
+    
     addition_set = set(additions)
     removal_set = set(removals)
     collision = addition_set & removal_set
     addition_set -= collision
     removal_set -= collision
+    
+    description = " ".join(part for part in description_parts if part.strip())
+    
     return UpdateDescriptor(
+        description=description,
         add_tags=frozenset(addition_set),
         remove_tags=frozenset(removal_set),
         project=project,
         due=due,
         wait=wait,
+        priority=priority,
+        status=status,
+        summary=summary,
+        x_properties=x_properties,
     )
 
 
@@ -127,6 +162,7 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
     (
         "+alpha -beta project:home due:2025-12-01",
         UpdateDescriptor(
+            description="",
             add_tags=frozenset({"alpha"}),
             remove_tags=frozenset({"beta"}),
             project="home",
@@ -137,6 +173,7 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
     (
         "grocery list +food -junk project:",
         UpdateDescriptor(
+            description="grocery list",
             add_tags=frozenset({"food"}),
             remove_tags=frozenset({"junk"}),
             project=None,
@@ -147,6 +184,7 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
     (
         "+urgent +urgent -urgent due:tomorrow",
         UpdateDescriptor(
+            description="",
             add_tags=frozenset(),
             remove_tags=frozenset(),
             project=None,
@@ -157,16 +195,19 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
     (
         "-old +new +alpha project:work status:done",
         UpdateDescriptor(
+            description="",
             add_tags=frozenset({"new", "alpha"}),
             remove_tags=frozenset({"old"}),
             project="work",
             due=None,
             wait=None,
+            status="DONE",
         ),
     ),
     (
         "due:eod +tag -tag review",
         UpdateDescriptor(
+            description="review",
             add_tags=frozenset(),
             remove_tags=frozenset(),
             project=None,
@@ -177,6 +218,7 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
     (
         "wait:2d +alpha -beta",
         UpdateDescriptor(
+            description="",
             add_tags=frozenset({"alpha"}),
             remove_tags=frozenset({"beta"}),
             project=None,
