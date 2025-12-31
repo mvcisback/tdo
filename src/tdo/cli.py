@@ -338,7 +338,7 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
     console.print(table)
 
 
-_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "sync"}
+_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "show", "sync"}
 
 
 def _looks_like_filter_token(value: str) -> bool:
@@ -521,6 +521,55 @@ async def _handle_list(args: argparse.Namespace) -> None:
         await client.close()
 
 
+def _format_task_detail(task: Task) -> str:
+    lines = []
+    lines.append(f"ID:          {task.task_index or '?'}")
+    lines.append(f"Summary:     {task.summary}")
+    lines.append(f"Status:      {task.status}")
+    lines.append(f"Priority:    {task.priority if task.priority is not None else '-'}")
+    lines.append(f"Due:         {task.due.isoformat() if task.due else '-'}")
+
+    if task.categories:
+        lines.append(f"Tags:        {', '.join(task.categories)}")
+    else:
+        lines.append("Tags:        -")
+
+    project = task.x_properties.get("X-PROJECT")
+    if project:
+        lines.append(f"Project:     {project}")
+
+    wait = task.x_properties.get("X-WAIT")
+    if wait:
+        lines.append(f"Wait:        {wait}")
+
+    for key, value in task.x_properties.items():
+        if key not in ("X-PROJECT", "X-WAIT"):
+            lines.append(f"{key}: {value}")
+
+    lines.append(f"UID:         {task.uid}")
+    if task.href:
+        lines.append(f"Href:        {task.href}")
+
+    return "\n".join(lines)
+
+
+async def _handle_show(args: argparse.Namespace) -> None:
+    client = await _cache_client(args.env)
+    try:
+        tasks = _select_tasks_for_filter(
+            await _sorted_tasks(client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            _exit_with_message("no tasks match filter")
+        for i, task in enumerate(tasks):
+            if i > 0:
+                print()
+            print(_format_task_detail(task))
+    finally:
+        await client.close()
+
+
 async def _handle_pull(args: argparse.Namespace) -> None:
     async def _pull(client: "CalDAVClient") -> None:
         result = await client.pull()
@@ -610,6 +659,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sync_parser = subparsers.add_parser("sync")
     sync_parser.set_defaults(func=_handle_sync)
+
+    show_parser = subparsers.add_parser("show")
+    show_parser.set_defaults(func=_handle_show)
 
     config_parser = subparsers.add_parser("config")
     config_parser.set_defaults(func=_handle_config_help, parser=config_parser)
