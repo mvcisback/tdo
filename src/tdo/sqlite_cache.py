@@ -106,6 +106,7 @@ class SqliteTaskCache:
             summary TEXT NOT NULL,
             status TEXT NOT NULL,
             due TEXT,
+            wait TEXT,
             priority INTEGER,
             x_properties TEXT,
             categories TEXT,
@@ -136,6 +137,9 @@ class SqliteTaskCache:
             )
             await self._conn.commit()
             await self._assign_indices_to_existing_tasks()
+        if "wait" not in columns:
+            await self._conn.execute("ALTER TABLE tasks ADD COLUMN wait TEXT")
+            await self._conn.commit()
 
     async def _assign_indices_to_existing_tasks(self) -> None:
         assert self._conn is not None
@@ -296,6 +300,7 @@ class SqliteTaskCache:
         summary = task.summary or task.uid
         status = task.status or "IN-PROCESS"
         due_value = task.due.isoformat() if task.due else None
+        wait_value = task.wait.isoformat() if task.wait else None
         priority = task.priority
         x_props = _serialize_map(task.x_properties)
         categories = _serialize_properties(task.categories)
@@ -323,6 +328,7 @@ class SqliteTaskCache:
                 summary,
                 status,
                 due,
+                wait,
                 priority,
                 x_properties,
                 categories,
@@ -332,11 +338,12 @@ class SqliteTaskCache:
                 last_synced,
                 updated_at,
                 task_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(uid) DO UPDATE SET
                 summary = excluded.summary,
                 status = excluded.status,
                 due = excluded.due,
+                wait = excluded.wait,
                 priority = excluded.priority,
                 x_properties = excluded.x_properties,
                 categories = excluded.categories,
@@ -352,6 +359,7 @@ class SqliteTaskCache:
                 summary,
                 status,
                 due_value,
+                wait_value,
                 priority,
                 x_props,
                 categories,
@@ -376,11 +384,19 @@ class SqliteTaskCache:
                 due = datetime.fromisoformat(due_value)
             except ValueError:
                 due = None
+        wait = None
+        wait_value = row["wait"]
+        if wait_value:
+            try:
+                wait = datetime.fromisoformat(wait_value)
+            except ValueError:
+                wait = None
         return Task(
             uid=row["uid"],
             summary=row["summary"],
             status=row["status"],
             due=due,
+            wait=wait,
             priority=row["priority"],
             x_properties=_parse_json(row["x_properties"]),
             categories=_parse_list(row["categories"]),

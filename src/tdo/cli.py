@@ -136,6 +136,7 @@ def _has_update_candidates(descriptor: UpdateDescriptor) -> bool:
 def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
     summary = descriptor.summary or descriptor.description
     due = _resolve_due_value(descriptor.due)
+    wait = _resolve_due_value(descriptor.wait)
     x_properties = dict(descriptor.x_properties)
     raw_categories = x_properties.pop("CATEGORIES", None)
     metadata_categories = _split_categories_value(raw_categories)
@@ -147,14 +148,11 @@ def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
         categories = base_categories
     if descriptor.project:
         x_properties["X-PROJECT"] = descriptor.project
-    if descriptor.wait:
-        wait_dt = _resolve_due_value(descriptor.wait)
-        if wait_dt:
-            x_properties["X-WAIT"] = wait_dt.isoformat()
     return TaskPayload(
         summary=summary,
         priority=descriptor.priority,
         due=due,
+        wait=wait,
         status=descriptor.status or "IN-PROCESS",
         x_properties=x_properties,
         categories=categories if categories else None,
@@ -165,10 +163,12 @@ def _build_patch_from_descriptor(
     descriptor: UpdateDescriptor, existing: Task | None
 ) -> TaskPatch:
     due = _resolve_due_value(descriptor.due)
+    wait = _resolve_due_value(descriptor.wait)
     patch = TaskPatch(
         summary=descriptor.summary,
         priority=descriptor.priority,
         due=due,
+        wait=wait,
         status=descriptor.status,
     )
     x_properties = dict(descriptor.x_properties)
@@ -184,10 +184,6 @@ def _build_patch_from_descriptor(
         patch.categories = metadata_categories
     if descriptor.project:
         x_properties["X-PROJECT"] = descriptor.project
-    if descriptor.wait:
-        wait_dt = _resolve_due_value(descriptor.wait)
-        if wait_dt:
-            x_properties["X-WAIT"] = wait_dt.isoformat()
     patch.x_properties = x_properties
     return patch
 
@@ -528,6 +524,7 @@ def _format_task_detail(task: Task) -> str:
     lines.append(f"Status:      {task.status}")
     lines.append(f"Priority:    {task.priority if task.priority is not None else '-'}")
     lines.append(f"Due:         {task.due.isoformat() if task.due else '-'}")
+    lines.append(f"Wait:        {task.wait.isoformat() if task.wait else '-'}")
 
     if task.categories:
         lines.append(f"Tags:        {', '.join(task.categories)}")
@@ -538,12 +535,8 @@ def _format_task_detail(task: Task) -> str:
     if project:
         lines.append(f"Project:     {project}")
 
-    wait = task.x_properties.get("X-WAIT")
-    if wait:
-        lines.append(f"Wait:        {wait}")
-
     for key, value in task.x_properties.items():
-        if key not in ("X-PROJECT", "X-WAIT"):
+        if key != "X-PROJECT":
             lines.append(f"{key}: {value}")
 
     lines.append(f"UID:         {task.uid}")

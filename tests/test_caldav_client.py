@@ -26,6 +26,7 @@ def test_build_ics_includes_priority_due_and_x_props() -> None:
     ics = client._build_ics(
         "Inspect",
         due,
+        None,  # wait
         2,
         {"X-TEST": "value"},
         None,
@@ -50,6 +51,7 @@ def test_task_from_data_parses_fields() -> None:
     body = client._build_ics(
         "Review",
         datetime(2025, 2, 3, 4, 5, 6),
+        datetime(2025, 1, 15, 0, 0, 0),  # wait (DTSTART)
         4,
         {"X-ORG": "dev"},
         ["plan", "review"],
@@ -62,6 +64,7 @@ def test_task_from_data_parses_fields() -> None:
     assert task.priority == 4
     assert task.x_properties.get("X-ORG") == "dev"
     assert task.due == datetime(2025, 2, 3, 4, 5, 6)
+    assert task.wait == datetime(2025, 1, 15, 0, 0, 0)
     assert task.categories == ["plan", "review"]
 
 

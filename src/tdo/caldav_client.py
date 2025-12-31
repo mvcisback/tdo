@@ -109,6 +109,7 @@ class CalDAVClient:
             summary=payload.summary,
             status=payload.status or "IN-PROCESS",
             due=payload.due,
+            wait=payload.wait,
             priority=payload.priority,
             x_properties=dict(payload.x_properties),
             categories=categories,
@@ -142,6 +143,7 @@ class CalDAVClient:
     def _apply_patch(self, task: Task, patch: TaskPatch) -> Task:
         summary = patch.summary or task.summary or task.uid
         due = patch.due if patch.due is not None else task.due
+        wait = patch.wait if patch.wait is not None else task.wait
         priority = patch.priority if patch.priority is not None else task.priority
         status = patch.status or task.status
         x_properties = dict(task.x_properties)
@@ -153,6 +155,7 @@ class CalDAVClient:
             summary=summary,
             status=status,
             due=due,
+            wait=wait,
             priority=priority,
             x_properties=x_properties,
             categories=categories,
@@ -220,6 +223,7 @@ class CalDAVClient:
         body = self._build_ics(
             task.summary,
             task.due,
+            task.wait,
             task.priority,
             task.x_properties,
             task.categories,
@@ -231,7 +235,7 @@ class CalDAVClient:
 
     def _push_update(self, task: Task, calendar: "Calendar") -> Task:
         summary = task.summary or task.uid
-        body = self._build_ics(summary, task.due, task.priority, task.x_properties, task.categories, task.uid, task.status)
+        body = self._build_ics(summary, task.due, task.wait, task.priority, task.x_properties, task.categories, task.uid, task.status)
         resource = self._resource_for_update(task, calendar)
         resource.id = task.uid
         resource.data = body
@@ -263,6 +267,7 @@ class CalDAVClient:
         self,
         summary: str,
         due: datetime | None,
+        wait: datetime | None,
         priority: int | None,
         x_properties: Dict[str, str],
         categories: list[str] | None,
@@ -283,6 +288,8 @@ class CalDAVClient:
             lines.append(f"PRIORITY:{priority}")
         if due is not None:
             lines.append(f"DUE:{self._format_due(due)}")
+        if wait is not None:
+            lines.append(f"DTSTART:{self._format_due(wait)}")
         if categories:
             lines.append(f"CATEGORIES:{','.join(categories)}")
         for name, value in x_properties.items():
@@ -296,6 +303,7 @@ class CalDAVClient:
     def _task_from_data(self, data: str) -> Task:
         summary = ""
         due = None
+        wait = None
         priority = None
         status: str | None = None
         x_properties: Dict[str, str] = {}
@@ -312,6 +320,8 @@ class CalDAVClient:
                 uid = value
             elif key == "DUE":
                 due = self._parse_due(value)
+            elif key == "DTSTART":
+                wait = self._parse_due(value)
             elif key == "PRIORITY":
                 try:
                     priority = int(value)
@@ -328,6 +338,7 @@ class CalDAVClient:
             summary=summary,
             status=status or "IN-PROCESS",
             due=due,
+            wait=wait,
             priority=priority,
             x_properties=x_properties,
             categories=categories,

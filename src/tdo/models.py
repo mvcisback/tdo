@@ -11,6 +11,7 @@ class Task:
     summary: str
     status: str = "IN-PROCESS"
     due: Optional[datetime] = None
+    wait: Optional[datetime] = None
     priority: Optional[int] = None
     x_properties: Dict[str, str] = field(default_factory=dict)
     categories: list[str] = field(default_factory=list)
@@ -23,6 +24,7 @@ class TaskPayload:
     summary: str
     status: str = "IN-PROCESS"
     due: Optional[datetime] = None
+    wait: Optional[datetime] = None
     priority: Optional[int] = None
     x_properties: Dict[str, str] = field(default_factory=dict)
     categories: list[str] | None = None
@@ -33,6 +35,7 @@ class TaskPatch:
     summary: Optional[str] = None
     status: Optional[str] = None
     due: Optional[datetime] = None
+    wait: Optional[datetime] = None
     priority: Optional[int] = None
     x_properties: Dict[str, str] = field(default_factory=dict)
     categories: list[str] | None = None
@@ -43,6 +46,7 @@ class TaskPatch:
             or self.status
             or self.priority is not None
             or self.due is not None
+            or self.wait is not None
             or self.x_properties
             or self.categories is not None
         )
