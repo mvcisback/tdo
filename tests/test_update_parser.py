@@ -31,10 +31,11 @@ def test_tags_present_in_both_sets_are_dropped() -> None:
     assert descriptor.remove_tags == frozenset({"remove"})
 
 
-def test_blank_project_and_due_resolve_to_none() -> None:
+def test_blank_project_and_due_resolve_to_empty_string() -> None:
+    """Empty values signal 'unset' and are preserved as empty strings."""
     descriptor = parse_update("project: due:")
-    assert descriptor.project is None
-    assert descriptor.due is None
+    assert descriptor.project == ""
+    assert descriptor.due == ""
 
 
 _TOKEN_OPTIONS = [
@@ -54,6 +55,8 @@ _TOKEN_OPTIONS = [
     "due:",
     "wait:2d",
     "wait:",
+    "pri:5",
+    "pri:",
     "status:done",
     "summary:check",
     "word",
@@ -87,19 +90,22 @@ def _simulate_descriptor(raw: str) -> UpdateDescriptor:
             value = rest.strip()
             
             if key_lower == "project":
-                project = value or None
+                project = value  # Keep empty string to signal "unset"
                 continue
             if key_lower == "due":
-                due = value or None
+                due = value  # Keep empty string to signal "unset"
                 continue
             if key_lower == "wait":
-                wait = value or None
+                wait = value  # Keep empty string to signal "unset"
                 continue
             if key_lower == "pri":
-                try:
-                    priority = int(value) if value else None
-                except ValueError:
-                    pass
+                if not value:
+                    priority = 0  # Use 0 to signal "unset"
+                else:
+                    try:
+                        priority = int(value)
+                    except ValueError:
+                        pass
                 continue
             if key_lower == "status":
                 status = value.upper() if value else None
@@ -176,7 +182,7 @@ _EXAMPLE_INPUTS: list[tuple[str, UpdateDescriptor]] = [
             description="grocery list",
             add_tags=frozenset({"food"}),
             remove_tags=frozenset({"junk"}),
-            project=None,
+            project="",  # Empty string signals "unset"
             due=None,
             wait=None,
         ),

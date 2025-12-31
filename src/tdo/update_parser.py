@@ -75,15 +75,18 @@ class _UpdateVisitor(NodeVisitor):
             key_lower = key.lower()
             
             if key_lower == "project":
-                self.project = value or None
+                self.project = value  # Keep empty string to signal "unset"
             elif key_lower == "due":
-                self.due = value or None
+                self.due = value  # Keep empty string to signal "unset"
             elif key_lower == "wait":
-                self.wait = value or None
+                self.wait = value  # Keep empty string to signal "unset"
             elif key_lower == "pri":
-                parsed_priority = _parse_priority(value)
-                if parsed_priority is not None:
-                    self.priority = parsed_priority
+                if not value:
+                    self.priority = 0  # Use 0 to signal "unset"
+                else:
+                    parsed_priority = _parse_priority(value)
+                    if parsed_priority is not None:
+                        self.priority = parsed_priority
             elif key_lower == "status":
                 self.status = value.upper() if value else None
             elif key_lower == "summary":

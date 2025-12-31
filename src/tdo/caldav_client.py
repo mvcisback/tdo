@@ -17,6 +17,10 @@ if TYPE_CHECKING:
     from caldav.objects import CalendarObjectResource
 
 
+# Sentinel value to indicate a datetime field should be explicitly unset
+_UNSET_DATETIME = datetime(1, 1, 1, 0, 0, 0)
+
+
 def _debug_log(stage: str, duration: float, info: str | None = None) -> None:
     suffix = f" {info}" if info else ""
     print(f"[timing] {stage}: {duration:.3f}s{suffix}")
@@ -142,12 +146,30 @@ class CalDAVClient:
 
     def _apply_patch(self, task: Task, patch: TaskPatch) -> Task:
         summary = patch.summary or task.summary or task.uid
-        due = patch.due if patch.due is not None else task.due
-        wait = patch.wait if patch.wait is not None else task.wait
-        priority = patch.priority if patch.priority is not None else task.priority
+        # Handle sentinel values for "unset"
+        if patch.due == _UNSET_DATETIME:
+            due = None
+        elif patch.due is not None:
+            due = patch.due
+        else:
+            due = task.due
+        if patch.wait == _UNSET_DATETIME:
+            wait = None
+        elif patch.wait is not None:
+            wait = patch.wait
+        else:
+            wait = task.wait
+        if patch.priority == 0:
+            priority = None  # 0 means unset priority
+        elif patch.priority is not None:
+            priority = patch.priority
+        else:
+            priority = task.priority
         status = patch.status or task.status
         x_properties = dict(task.x_properties)
         x_properties.update(patch.x_properties)
+        # Remove properties with empty values (signals deletion)
+        x_properties = {k: v for k, v in x_properties.items() if v}
         categories = patch.categories if patch.categories is not None else task.categories
         categories = list(categories)
         return Task(

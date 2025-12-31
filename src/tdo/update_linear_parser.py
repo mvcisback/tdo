@@ -51,18 +51,21 @@ def parse_update(raw: str) -> UpdateDescriptor:
             value = rest.strip()
             
             if key_lower == "project":
-                project = value or None
+                project = value  # Keep empty string to signal "unset"
                 continue
             if key_lower == "due":
-                due = value or None
+                due = value  # Keep empty string to signal "unset"
                 continue
             if key_lower == "wait":
-                wait = value or None
+                wait = value  # Keep empty string to signal "unset"
                 continue
             if key_lower == "pri":
-                parsed_priority = _parse_priority(value)
-                if parsed_priority is not None:
-                    priority = parsed_priority
+                if not value:
+                    priority = 0  # Use 0 to signal "unset"
+                else:
+                    parsed_priority = _parse_priority(value)
+                    if parsed_priority is not None:
+                        priority = parsed_priority
                 continue
             if key_lower == "status":
                 status = value.upper() if value else None

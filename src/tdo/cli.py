@@ -27,6 +27,9 @@ from .update_linear_parser import parse_update
 
 T = TypeVar("T")
 
+# Sentinel value to indicate a datetime field should be explicitly unset
+_UNSET_DATETIME = datetime(1, 1, 1, 0, 0, 0)
+
 
 async def _run_with_client(env: str | None, callback: Callable[["CalDAVClient"], Awaitable[T]]) -> T:
     from .caldav_client import CalDAVClient
@@ -125,9 +128,9 @@ def _has_update_candidates(descriptor: UpdateDescriptor) -> bool:
         or descriptor.priority is not None
         or descriptor.status
         or descriptor.x_properties
-        or descriptor.project
-        or descriptor.due
-        or descriptor.wait
+        or descriptor.project is not None  # Empty string means "unset"
+        or descriptor.due is not None  # Empty string means "unset"
+        or descriptor.wait is not None  # Empty string means "unset"
         or descriptor.add_tags
         or descriptor.remove_tags
     )
@@ -162,11 +165,18 @@ def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
 def _build_patch_from_descriptor(
     descriptor: UpdateDescriptor, existing: Task | None
 ) -> TaskPatch:
-    due = _resolve_due_value(descriptor.due)
-    wait = _resolve_due_value(descriptor.wait)
+    # Handle empty string as "unset" using sentinel datetime
+    if descriptor.due == "":
+        due = _UNSET_DATETIME
+    else:
+        due = _resolve_due_value(descriptor.due)
+    if descriptor.wait == "":
+        wait = _UNSET_DATETIME
+    else:
+        wait = _resolve_due_value(descriptor.wait)
     patch = TaskPatch(
         summary=descriptor.summary,
-        priority=descriptor.priority,
+        priority=descriptor.priority,  # 0 signals unset
         due=due,
         wait=wait,
         status=descriptor.status,
@@ -182,8 +192,11 @@ def _build_patch_from_descriptor(
         patch.categories = tags_value
     elif metadata_provided:
         patch.categories = metadata_categories
-    if descriptor.project:
-        x_properties["X-PROJECT"] = descriptor.project
+    if descriptor.project is not None:
+        if descriptor.project:
+            x_properties["X-PROJECT"] = descriptor.project
+        else:
+            x_properties["X-PROJECT"] = ""  # Empty = remove
     patch.x_properties = x_properties
     return patch
 
