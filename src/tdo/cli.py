@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Awaitable, Callable, NoReturn, Sequence, TypeVar
 
@@ -29,6 +30,13 @@ T = TypeVar("T")
 
 # Sentinel value to indicate a datetime field should be explicitly unset
 _UNSET_DATETIME = datetime(1, 1, 1, 0, 0, 0)
+
+
+def _get_version() -> str:
+    try:
+        return version("tdo")
+    except PackageNotFoundError:
+        return "dev"
 
 
 async def _run_with_client(env: str | None, callback: Callable[["CalDAVClient"], Awaitable[T]]) -> T:
@@ -637,6 +645,9 @@ def _handle_config_help(args: argparse.Namespace) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tdo")
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {_get_version()}"
+    )
     parser.add_argument("--env", dest="env", help="env name")
     subparsers = parser.add_subparsers(dest="command")
 
