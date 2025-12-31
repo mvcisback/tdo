@@ -103,6 +103,10 @@ def _parse_priority(raw: str) -> int | None:
         return None
 
 
+def _truncate_summary(summary: str, max_len: int = 30) -> str:
+    if len(summary) <= max_len:
+        return summary
+    return summary[: max_len - 3] + "..."
 
 
 def _parse_update_descriptor(tokens: Sequence[str]) -> UpdateDescriptor:
@@ -451,7 +455,7 @@ async def _handle_add(args: argparse.Namespace) -> None:
     client = await _cache_client(args.env)
     try:
         created = await client.create_task(payload)
-        print(created.uid)
+        print(f"{created.uid} added as index {created.task_index}")
     finally:
         await client.close()
 
@@ -475,10 +479,11 @@ async def _handle_modify(args: argparse.Namespace) -> None:
             if not patch.has_changes():
                 continue
             await client.modify_task(task, patch)
+            truncated = _truncate_summary(task.summary)
+            print(f"{task.uid} {truncated} was modified.")
             modified += 1
         if modified == 0:
             _exit_with_message("no changes provided")
-        print(f"modified {modified} tasks")
     finally:
         await client.close()
 
@@ -511,8 +516,10 @@ async def _handle_delete(args: argparse.Namespace) -> None:
         )
         if not tasks:
             _exit_with_message("no tasks match filter")
-        deleted = await _delete_many(client, [task.uid for task in tasks])
-        print(f"deleted {len(deleted)} tasks")
+        for task in tasks:
+            await client.delete_task(task.uid)
+            truncated = _truncate_summary(task.summary)
+            print(f"{task.uid} {truncated} was deleted.")
     finally:
         await client.close()
 
@@ -585,9 +592,13 @@ async def _handle_show(args: argparse.Namespace) -> None:
 
 
 async def _handle_pull(args: argparse.Namespace) -> None:
+    config = _resolve_config(args.env)
+
     async def _pull(client: "CalDAVClient") -> None:
         result = await client.pull()
         print(f"pulled {result.fetched} tasks")
+        if result.tasks:
+            _pretty_print_tasks(result.tasks, config.show_uids)
 
     await _run_with_client(args.env, _pull)
 

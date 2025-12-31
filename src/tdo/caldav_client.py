@@ -28,7 +28,11 @@ def _debug_log(stage: str, duration: float, info: str | None = None) -> None:
 
 @dataclass
 class PullResult:
-    fetched: int
+    tasks: list[Task]
+
+    @property
+    def fetched(self) -> int:
+        return len(self.tasks)
 
 
 @dataclass
@@ -193,7 +197,7 @@ class CalDAVClient:
         await self._ensure_cache().replace_remote_tasks(tasks)
         elapsed = perf_counter() - start
         _debug_log("pull", elapsed, f"count={len(tasks)}")
-        return PullResult(fetched=len(tasks))
+        return PullResult(tasks=tasks)
 
     async def push(self) -> PushResult:
         start = perf_counter()

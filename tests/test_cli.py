@@ -190,7 +190,7 @@ def test_modify_command_accepts_summary_patch() -> None:
 def test_modify_command_adds_tag_without_other_changes() -> None:
     exit_code, stdout = run_cli(["1", "modify", "+foo2"])
     assert exit_code == 0
-    assert "modified 1 tasks" in stdout
+    assert "was modified." in stdout
     assert DummyClient.last_patch is not None
     assert DummyClient.last_patch.categories == ["foo2"]
 
@@ -203,7 +203,8 @@ def test_delete_command_accepts_filter_indices() -> None:
     ]
     exit_code, stdout = run_cli(["1,3", "del"])
     assert exit_code == 0
-    assert "deleted 2 tasks" in stdout
+    assert "first Alpha was deleted." in stdout
+    assert "third Charlie was deleted." in stdout
     assert DummyClient.deleted == ["first", "third"]
 
 
@@ -271,7 +272,7 @@ def test_modify_command_removes_dash_prefixed_tag() -> None:
     ]
     exit_code, stdout = run_cli(["1", "modify", "-foo"])
     assert exit_code == 0
-    assert "modified 1 tasks" in stdout
+    assert "first First was modified." in stdout
     assert DummyClient.last_patch is not None
     assert DummyClient.last_patch.categories == []
 
