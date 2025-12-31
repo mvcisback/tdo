@@ -15,6 +15,7 @@ class Task:
     x_properties: Dict[str, str] = field(default_factory=dict)
     categories: list[str] = field(default_factory=list)
     href: str | None = None
+    task_index: int | None = None
 
 
 @dataclass

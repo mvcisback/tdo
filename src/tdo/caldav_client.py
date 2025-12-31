@@ -113,7 +113,11 @@ class CalDAVClient:
             x_properties=dict(payload.x_properties),
             categories=categories,
         )
-        await self._ensure_cache().upsert_task(task, pending_action="create")
+        cache = self._ensure_cache()
+        await cache.upsert_task(task, pending_action="create")
+        # Assign a stable index to the new task
+        task_index = await cache.assign_index(uid)
+        task.task_index = task_index
         return task
 
     async def modify_task(self, task: Task, patch: TaskPatch) -> Task:
@@ -153,6 +157,7 @@ class CalDAVClient:
             x_properties=x_properties,
             categories=categories,
             href=task.href,
+            task_index=task.task_index,
         )
 
     async def pull(self) -> PullResult:

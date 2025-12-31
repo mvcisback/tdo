@@ -113,15 +113,85 @@ class SqliteTaskCache:
             pending_action TEXT,
             deleted INTEGER NOT NULL DEFAULT 0,
             last_synced REAL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            task_index INTEGER UNIQUE
         );
         CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due);
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_dirty ON tasks(pending_action);
+        CREATE INDEX IF NOT EXISTS idx_tasks_index ON tasks(task_index);
         """
         assert self._conn is not None
         await self._conn.executescript(script)
         await self._conn.commit()
+        await self._migrate_schema()
+
+    async def _migrate_schema(self) -> None:
+        assert self._conn is not None
+        cursor = await self._conn.execute("PRAGMA table_info(tasks)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "task_index" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE tasks ADD COLUMN task_index INTEGER UNIQUE"
+            )
+            await self._conn.commit()
+            await self._assign_indices_to_existing_tasks()
+
+    async def _assign_indices_to_existing_tasks(self) -> None:
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT uid FROM tasks WHERE deleted = 0 ORDER BY due IS NULL, due, summary"
+        )
+        rows = await cursor.fetchall()
+        for idx, row in enumerate(rows, start=1):
+            await self._conn.execute(
+                "UPDATE tasks SET task_index = ? WHERE uid = ?",
+                (idx, row[0])
+            )
+        await self._conn.commit()
+
+    async def _next_available_index(self) -> int:
+        """Find smallest hole or increment max."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            "SELECT task_index FROM tasks WHERE task_index IS NOT NULL ORDER BY task_index"
+        )
+        rows = await cursor.fetchall()
+        indices = [row[0] for row in rows]
+
+        if not indices:
+            return 1
+
+        # Find first hole
+        expected = 1
+        for idx in indices:
+            if idx > expected:
+                return expected
+            expected = idx + 1
+
+        # No holes, return max + 1
+        return indices[-1] + 1
+
+    async def assign_index(self, uid: str) -> int:
+        """Assign next available index to a task."""
+        index = await self._next_available_index()
+        assert self._conn is not None
+        await self._conn.execute(
+            "UPDATE tasks SET task_index = ? WHERE uid = ?",
+            (index, uid)
+        )
+        await self._conn.commit()
+        return index
+
+    async def get_task_by_index(self, index: int) -> Task | None:
+        """Get task by its stable index."""
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT * FROM tasks WHERE task_index = ? AND deleted = 0",
+            (index,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return self._build_task(row) if row else None
 
     async def list_tasks(self) -> list[Task]:
         assert self._conn is not None
@@ -142,16 +212,36 @@ class SqliteTaskCache:
     async def replace_remote_tasks(self, tasks: Sequence[Task]) -> None:
         timestamp = time.time()
         assert self._conn is not None
+
+        # Preserve existing indices for tasks we're updating
+        cursor = await self._conn.execute(
+            "SELECT uid, task_index FROM tasks WHERE task_index IS NOT NULL"
+        )
+        existing_indices = {row[0]: row[1] for row in await cursor.fetchall()}
+
         await self._conn.execute("DELETE FROM tasks WHERE pending_action IS NULL")
         await self._conn.commit()
+
+        # Track which tasks need new indices
+        tasks_needing_indices: list[str] = []
+
         for task in tasks:
+            # Preserve existing index if task was already in cache
+            preserved_index = existing_indices.get(task.uid)
             await self._insert_or_update(
                 task,
                 pending_action=None,
                 deleted=False,
                 last_synced=timestamp,
                 clear_pending=True,
+                task_index=preserved_index,
             )
+            if preserved_index is None:
+                tasks_needing_indices.append(task.uid)
+
+        # Assign indices to new tasks
+        for uid in tasks_needing_indices:
+            await self.assign_index(uid)
 
     async def upsert_task(
         self,
@@ -161,6 +251,7 @@ class SqliteTaskCache:
         deleted: bool = False,
         last_synced: float | None = None,
         clear_pending: bool = False,
+        task_index: int | None = None,
     ) -> None:
         await self._insert_or_update(
             task,
@@ -168,6 +259,7 @@ class SqliteTaskCache:
             deleted=deleted,
             last_synced=last_synced,
             clear_pending=clear_pending,
+            task_index=task_index,
         )
 
     async def delete_task(self, uid: str) -> None:
@@ -199,6 +291,7 @@ class SqliteTaskCache:
         deleted: bool,
         last_synced: float | None,
         clear_pending: bool,
+        task_index: int | None = None,
     ) -> None:
         summary = task.summary or task.uid
         status = task.status or "IN-PROCESS"
@@ -209,7 +302,7 @@ class SqliteTaskCache:
         href = task.href
         assert self._conn is not None
         async with self._conn.execute(
-            "SELECT pending_action, last_synced FROM tasks WHERE uid = ?",
+            "SELECT pending_action, last_synced, task_index FROM tasks WHERE uid = ?",
             (task.uid,)
         ) as cursor:
             existing = await cursor.fetchone()
@@ -220,6 +313,8 @@ class SqliteTaskCache:
         else:
             resolved_pending = existing["pending_action"] if existing else None
         resolved_last_synced = last_synced if last_synced is not None else (existing["last_synced"] if existing else None)
+        # Preserve existing index if not explicitly provided
+        resolved_index = task_index if task_index is not None else (existing["task_index"] if existing else None)
         now = time.time()
         await self._conn.execute(
             """
@@ -235,8 +330,9 @@ class SqliteTaskCache:
                 pending_action,
                 deleted,
                 last_synced,
-                updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                updated_at,
+                task_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(uid) DO UPDATE SET
                 summary = excluded.summary,
                 status = excluded.status,
@@ -248,7 +344,8 @@ class SqliteTaskCache:
                 pending_action = ?,
                 deleted = ?,
                 last_synced = ?,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                task_index = COALESCE(excluded.task_index, task_index)
             """,
             (
                 task.uid,
@@ -263,6 +360,7 @@ class SqliteTaskCache:
                 1 if deleted else 0,
                 resolved_last_synced,
                 now,
+                resolved_index,
                 resolved_pending,
                 1 if deleted else 0,
                 resolved_last_synced,
@@ -287,4 +385,5 @@ class SqliteTaskCache:
             x_properties=_parse_json(row["x_properties"]),
             categories=_parse_list(row["categories"]),
             href=row["href"],
+            task_index=row["task_index"],
         )

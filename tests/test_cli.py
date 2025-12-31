@@ -28,9 +28,10 @@ class DummyClient:
     last_modified_uid: str | None = None
     deleted: list[str] = []
     default_tasks: list[Task] = [
-        Task(uid="list-task", summary="List task", due=None, priority=3)
+        Task(uid="list-task", summary="List task", due=None, priority=3, task_index=1)
     ]
     list_entries: list[Task] = list(default_tasks)
+    _next_index: int = 1
 
     def __init__(self, config: CaldavConfig) -> None:
         self.config = config
@@ -43,6 +44,7 @@ class DummyClient:
         cls.last_modified_uid = None
         cls.deleted = []
         cls.list_entries = list(cls.default_tasks)
+        cls._next_index = 2  # default_tasks has index 1
 
     def __enter__(self) -> DummyClient:
         return self
@@ -55,6 +57,8 @@ class DummyClient:
 
     async def create_task(self, payload: TaskPayload) -> Task:
         DummyClient.last_payload = payload
+        task_index = DummyClient._next_index
+        DummyClient._next_index += 1
         return Task(
             uid="dummy-task",
             summary=payload.summary,
@@ -62,6 +66,7 @@ class DummyClient:
             priority=payload.priority,
             x_properties=payload.x_properties,
             categories=list(payload.categories or []),
+            task_index=task_index,
         )
 
     async def modify_task(self, task: Task, patch: TaskPatch) -> Task:
@@ -76,6 +81,7 @@ class DummyClient:
             x_properties=patch.x_properties,
             categories=categories,
             href=task.href,
+            task_index=task.task_index,
         )
 
     async def delete_task(self, uid: str) -> str:
@@ -191,9 +197,9 @@ def test_modify_command_adds_tag_without_other_changes() -> None:
 
 def test_delete_command_accepts_filter_indices() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="Alpha", due=None, priority=1),
-        Task(uid="second", summary="Bravo", due=None, priority=1),
-        Task(uid="third", summary="Charlie", due=None, priority=1),
+        Task(uid="first", summary="Alpha", due=None, priority=1, task_index=1),
+        Task(uid="second", summary="Bravo", due=None, priority=1, task_index=2),
+        Task(uid="third", summary="Charlie", due=None, priority=1, task_index=3),
     ]
     exit_code, stdout = run_cli(["1,3", "del"])
     assert exit_code == 0
@@ -203,8 +209,8 @@ def test_delete_command_accepts_filter_indices() -> None:
 
 def test_delete_command_accepts_numeric_identifiers() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="First", due=None, priority=1),
-        Task(uid="second", summary="Second", due=None, priority=2),
+        Task(uid="first", summary="First", due=None, priority=1, task_index=1),
+        Task(uid="second", summary="Second", due=None, priority=2, task_index=2),
     ]
     exit_code, stdout = run_cli(["1", "del"])
     assert exit_code == 0
@@ -222,8 +228,8 @@ def test_list_command_outputs_tasks() -> None:
 
 def test_list_command_hides_completed_tasks() -> None:
     DummyClient.list_entries = [
-        Task(uid="active", summary="Active task", due=None, priority=1),
-        Task(uid="done", summary="Done task", due=None, priority=1, status="COMPLETED"),
+        Task(uid="active", summary="Active task", due=None, priority=1, task_index=1),
+        Task(uid="done", summary="Done task", due=None, priority=1, status="COMPLETED", task_index=2),
     ]
     exit_code, stdout = run_cli(["list"])
     assert exit_code == 0
@@ -239,8 +245,8 @@ def test_default_command_is_list() -> None:
 
 def test_filter_indices_default_to_list_command() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="Alpha", due=None, priority=1),
-        Task(uid="second", summary="Bravo", due=None, priority=2),
+        Task(uid="first", summary="Alpha", due=None, priority=1, task_index=1),
+        Task(uid="second", summary="Bravo", due=None, priority=2, task_index=2),
     ]
     exit_code, stdout = run_cli(["2"])
     assert exit_code == 0
@@ -250,8 +256,8 @@ def test_filter_indices_default_to_list_command() -> None:
 
 def test_modify_command_accepts_dash_prefixed_tokens() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="First", due=None, priority=1),
-        Task(uid="second", summary="Second", due=None, priority=2),
+        Task(uid="first", summary="First", due=None, priority=1, task_index=1),
+        Task(uid="second", summary="Second", due=None, priority=2, task_index=2),
     ]
     exit_code, stdout = run_cli(["1", "modify", "-bar", "summary:Updated"])
     assert exit_code == 0
@@ -261,7 +267,7 @@ def test_modify_command_accepts_dash_prefixed_tokens() -> None:
 
 def test_modify_command_removes_dash_prefixed_tag() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="First", due=None, priority=1, categories=["foo"]),
+        Task(uid="first", summary="First", due=None, priority=1, categories=["foo"], task_index=1),
     ]
     exit_code, stdout = run_cli(["1", "modify", "-foo"])
     assert exit_code == 0
@@ -272,8 +278,8 @@ def test_modify_command_removes_dash_prefixed_tag() -> None:
 
 def test_modify_command_accepts_numeric_identifier() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="First", due=None, priority=1),
-        Task(uid="second", summary="Second", due=None, priority=2),
+        Task(uid="first", summary="First", due=None, priority=1, task_index=1),
+        Task(uid="second", summary="Second", due=None, priority=2, task_index=2),
     ]
     exit_code, stdout = run_cli(["1", "modify", "summary:Updated"])
     assert exit_code == 0

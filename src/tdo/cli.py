@@ -297,15 +297,17 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
     rows: list[list[str]] = []
     now = datetime.now()
     sorted_tasks = sorted(tasks, key=_task_sort_key)
-    for index, task in enumerate(sorted_tasks, start=1):
+    for task in sorted_tasks:
         due_label = _format_due_label(task.due, now)
         project = _format_project(task)
         tag = _format_tag(task)
         due_date = _format_due_date(task.due)
         summary = task.summary or ""
         priority_label = str(task.priority) if task.priority is not None else "-"
+        # Use stable task_index for ID column
+        id_label = str(task.task_index) if task.task_index is not None else "?"
         values: dict[str, str] = {
-            "ID": str(index),
+            "ID": id_label,
             "Age": due_label,
             "Project": project,
             "Tag": tag,
@@ -399,7 +401,8 @@ def _select_tasks_for_filter(tasks: list[Task], indices: list[str]) -> list[Task
     sorted_tasks = sorted(tasks, key=_task_sort_key)
     if not indices:
         return list(sorted_tasks)
-    index_map = {str(index + 1): task for index, task in enumerate(sorted_tasks)}
+    # Use stable task_index for filtering
+    index_map = {str(task.task_index): task for task in tasks if task.task_index is not None}
     selected: list[Task] = []
     for token in indices:
         task = index_map.get(token)
