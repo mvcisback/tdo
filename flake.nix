@@ -74,7 +74,7 @@ exec ${pkgs.radicale}/bin/radicale
         tdoApp = pkgs.writeShellScriptBin "tdo" ''
           cd ${workspaceRoot}
           export PYTHONPATH=${workspaceRoot}
-          exec ${venv}/bin/python main.py "$@"
+          exec ${venv}/bin/tdo "$@"
         '';
       in
       {

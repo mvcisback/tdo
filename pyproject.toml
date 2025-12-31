@@ -13,6 +13,8 @@ dependencies = [
     "pytimeparse>=1.1.8",
     "rich>=14.2.0",
 ]
+[project.scripts]
+tdo = "main:main"
 
 [dependency-groups]
 dev = [
@@ -31,3 +33,6 @@ version_scheme = "pep440"
 version_provider = "uv"
 update_changelog_on_bump = true
 major_version_zero = true
+
+[tool.uv]
+package = true
