@@ -1,3 +1,11 @@
+## 0.6.0 (2025-12-31)
+
+### Feat
+
+- **cli**: Add metadata-based filtering for list command
+- **cli**: Make add, modify, delete, pull outputs more verbose
+- **cli**: Add --version option
+
 ## 0.5.0 (2025-12-30)
 
 ### Feat
