@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import argparse
+import asyncio
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Callable, NoReturn, Sequence, TypeVar
+from typing import Awaitable, Callable, NoReturn, Sequence, TypeVar
 
 from rich import box
 from rich.console import Console
@@ -28,24 +28,23 @@ from .update_linear_parser import parse_update
 T = TypeVar("T")
 
 
-def _default_client_factory(config: CaldavConfig) -> "CalDAVClient":
+async def _run_with_client(env: str | None, callback: Callable[["CalDAVClient"], Awaitable[T]]) -> T:
     from .caldav_client import CalDAVClient
 
-    return CalDAVClient(config)
-
-
-_CLIENT_FACTORY: Callable[[CaldavConfig], "CalDAVClient"] = _default_client_factory
-
-
-def _run_with_client(env: str | None, callback: Callable[["CalDAVClient"], T]) -> T:
     config = _resolve_config(env)
-    with _CLIENT_FACTORY(config) as client:
-        return callback(client)
+    client = await CalDAVClient.create(config)
+    try:
+        with client:
+            return await callback(client)
+    finally:
+        await client.close()
 
 
-def _cache_client(env: str | None) -> "CalDAVClient":
+async def _cache_client(env: str | None) -> "CalDAVClient":
+    from .caldav_client import CalDAVClient
+
     config = _resolve_config(env)
-    return _CLIENT_FACTORY(config)
+    return await CalDAVClient.create(config)
 
 
 def _resolve_config(env: str | None) -> CaldavConfig:
@@ -53,7 +52,6 @@ def _resolve_config(env: str | None) -> CaldavConfig:
     if config_path:
         return load_config_from_path(Path(config_path).expanduser(), env=env)
     return load_config(env)
-
 
 
 
@@ -92,7 +90,6 @@ def _parse_priority(raw: str) -> int | None:
         return value
     except ValueError:
         return None
-
 
 
 
@@ -195,16 +192,16 @@ def _build_patch_from_descriptor(
     return patch
 
 
-def _delete_many(client: "CalDAVClient", targets: list[str]) -> list[str]:
+async def _delete_many(client: "CalDAVClient", targets: list[str]) -> list[str]:
     deleted: list[str] = []
     for uid in targets:
-        client.delete_task(uid)
+        await client.delete_task(uid)
         deleted.append(uid)
     return deleted
 
 
-def _sorted_tasks(client: "CalDAVClient") -> list[Task]:
-    return sorted(client.list_tasks(), key=_task_sort_key)
+async def _sorted_tasks(client: "CalDAVClient") -> list[Task]:
+    return sorted(await client.list_tasks(), key=_task_sort_key)
 
 
 def _task_sort_key(task: Task) -> tuple[datetime, int, str]:
@@ -232,6 +229,9 @@ def _format_due_label(due: datetime | None, now: datetime) -> str:
 
 
 SUMMARY_WIDTH = 45
+
+
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -409,105 +409,128 @@ def _normalize_tokens(tokens: Sequence[str] | None) -> list[str]:
 
 
 
-
-def _handle_add(args: argparse.Namespace) -> None:
+async def _handle_add(args: argparse.Namespace) -> None:
     tokens = _normalize_tokens(args.tokens)
     descriptor = _parse_update_descriptor(tokens)
     payload = _build_payload(descriptor)
-    client = _cache_client(args.env)
-    created = client.create_task(payload)
-    print(created.uid)
+    client = await _cache_client(args.env)
+    try:
+        created = await client.create_task(payload)
+        print(created.uid)
+    finally:
+        await client.close()
 
 
-def _handle_modify(args: argparse.Namespace) -> None:
+async def _handle_modify(args: argparse.Namespace) -> None:
     tokens = _normalize_tokens(args.tokens)
     descriptor = _parse_update_descriptor(tokens)
     if not _has_update_candidates(descriptor):
         _exit_with_message("no changes provided")
-    client = _cache_client(args.env)
-    tasks = _select_tasks_for_filter(
-        _sorted_tasks(client),
-        _effective_filter_indices(args.filter_indices),
-    )
-    if not tasks:
-        _exit_with_message("no tasks match filter")
-    modified = 0
-    for task in tasks:
-        patch = _build_patch_from_descriptor(descriptor, task)
-        if not patch.has_changes():
-            continue
-        client.modify_task(task, patch)
-        modified += 1
-    if modified == 0:
-        _exit_with_message("no changes provided")
-    print(f"modified {modified} tasks")
+    client = await _cache_client(args.env)
+    try:
+        tasks = _select_tasks_for_filter(
+            await _sorted_tasks(client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            _exit_with_message("no tasks match filter")
+        modified = 0
+        for task in tasks:
+            patch = _build_patch_from_descriptor(descriptor, task)
+            if not patch.has_changes():
+                continue
+            await client.modify_task(task, patch)
+            modified += 1
+        if modified == 0:
+            _exit_with_message("no changes provided")
+        print(f"modified {modified} tasks")
+    finally:
+        await client.close()
 
 
-def _handle_do(args: argparse.Namespace) -> None:
+async def _handle_do(args: argparse.Namespace) -> None:
     patch = TaskPatch(status="COMPLETED")
-    client = _cache_client(args.env)
-    tasks = _select_tasks_for_filter(
-        _sorted_tasks(client),
-        _effective_filter_indices(args.filter_indices),
-    )
-    if not tasks:
-        _exit_with_message("no tasks match filter")
-    completed: list[str] = []
-    for task in tasks:
-        client.modify_task(task, patch)
-        completed.append(task.uid)
-    print(f"marked {len(completed)} tasks as done")
+    client = await _cache_client(args.env)
+    try:
+        tasks = _select_tasks_for_filter(
+            await _sorted_tasks(client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            _exit_with_message("no tasks match filter")
+        completed: list[str] = []
+        for task in tasks:
+            await client.modify_task(task, patch)
+            completed.append(task.uid)
+        print(f"marked {len(completed)} tasks as done")
+    finally:
+        await client.close()
 
 
-def _handle_delete(args: argparse.Namespace) -> None:
-    client = _cache_client(args.env)
-    tasks = _select_tasks_for_filter(
-        _sorted_tasks(client),
-        _effective_filter_indices(args.filter_indices),
-    )
-    if not tasks:
-        _exit_with_message("no tasks match filter")
-    deleted = _delete_many(client, [task.uid for task in tasks])
-    print(f"deleted {len(deleted)} tasks")
+async def _handle_delete(args: argparse.Namespace) -> None:
+    client = await _cache_client(args.env)
+    try:
+        tasks = _select_tasks_for_filter(
+            await _sorted_tasks(client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            _exit_with_message("no tasks match filter")
+        deleted = await _delete_many(client, [task.uid for task in tasks])
+        print(f"deleted {len(deleted)} tasks")
+    finally:
+        await client.close()
 
 
-def _handle_list(args: argparse.Namespace) -> None:
+async def _handle_list(args: argparse.Namespace) -> None:
     config = _resolve_config(args.env)
-    client = _cache_client(args.env)
-    tasks = client.list_tasks()
-    if not tasks:
-        print("no cached tasks found; run 'tdo pull' to synchronize")
-        return
-    active_tasks = _filter_active_tasks(tasks)
-    filtered_tasks = _select_tasks_for_filter(
-        active_tasks,
-        _effective_filter_indices(args.filter_indices),
-    )
-    if not filtered_tasks:
-        print("no tasks match filter")
-        return
-    _pretty_print_tasks(filtered_tasks, config.show_uids)
+    client = await _cache_client(args.env)
+    try:
+        tasks = await client.list_tasks()
+        if not tasks:
+            print("no cached tasks found; run 'tdo pull' to synchronize")
+            return
+        active_tasks = _filter_active_tasks(tasks)
+        filtered_tasks = _select_tasks_for_filter(
+            active_tasks,
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not filtered_tasks:
+            print("no tasks match filter")
+            return
+        _pretty_print_tasks(filtered_tasks, config.show_uids)
+    finally:
+        await client.close()
 
 
-def _handle_pull(args: argparse.Namespace) -> None:
-    result = _run_with_client(args.env, lambda client: client.pull())
-    print(f"pulled {result.fetched} tasks")
+async def _handle_pull(args: argparse.Namespace) -> None:
+    async def _pull(client: "CalDAVClient") -> None:
+        result = await client.pull()
+        print(f"pulled {result.fetched} tasks")
+
+    await _run_with_client(args.env, _pull)
 
 
-def _handle_push(args: argparse.Namespace) -> None:
-    result = _run_with_client(args.env, lambda client: client.push())
-    print(
-        f"pushed created={result.created} updated={result.updated} deleted={result.deleted}"
-    )
+async def _handle_push(args: argparse.Namespace) -> None:
+    async def _push(client: "CalDAVClient") -> None:
+        result = await client.push()
+        print(
+            f"pushed created={result.created} updated={result.updated} deleted={result.deleted}"
+        )
+
+    await _run_with_client(args.env, _push)
 
 
-def _handle_sync(args: argparse.Namespace) -> None:
-    result = _run_with_client(args.env, lambda client: client.sync())
-    print(
-        "sync pulled="
-        f"{result.pulled.fetched} created={result.pushed.created}"
-        f" updated={result.pushed.updated} deleted={result.pushed.deleted}"
-    )
+async def _handle_sync(args: argparse.Namespace) -> None:
+    async def _sync(client: "CalDAVClient") -> None:
+        result = await client.sync()
+        print(
+            "sync pulled="
+            f"{result.pulled.fetched} created={result.pushed.created}"
+            f" updated={result.pushed.updated} deleted={result.pushed.deleted}"
+        )
+
+    await _run_with_client(args.env, _sync)
 
 
 def _handle_config_init(args: argparse.Namespace) -> None:
@@ -599,7 +622,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+async def _async_main(argv: Sequence[str] | None = None) -> int:
     input_args = list(argv if argv is not None else sys.argv[1:])
     filter_raw, command_tokens = _split_filter_and_command(input_args)
     parser = _build_parser()
@@ -615,5 +638,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if handler is None:
         parser.print_help()
         return 0
-    handler(args)
+    if asyncio.iscoroutinefunction(handler):
+        await handler(args)
+    else:
+        handler(args)
     return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    return asyncio.run(_async_main(argv))

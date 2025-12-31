@@ -14,11 +14,14 @@ CALENDAR_CONFIG = CaldavConfig(calendar_url="https://example.com/calendars/main"
 
 
 @pytest.fixture
-def client(tmp_path: Path) -> CalDAVClient:
-    return CalDAVClient(CALENDAR_CONFIG, cache_path=tmp_path / "cache.db")
+async def client(tmp_path: Path) -> CalDAVClient:
+    client = await CalDAVClient.create(CALENDAR_CONFIG, cache_path=tmp_path / "cache.db")
+    yield client
+    await client.close()
 
 
-def test_build_ics_includes_priority_due_and_x_props(client: CalDAVClient) -> None:
+def test_build_ics_includes_priority_due_and_x_props() -> None:
+    client = CalDAVClient(CALENDAR_CONFIG)
     due = datetime(2025, 1, 2, 3, 4, 5)
     ics = client._build_ics(
         "Inspect",
@@ -36,12 +39,14 @@ def test_build_ics_includes_priority_due_and_x_props(client: CalDAVClient) -> No
     assert ics.strip().endswith("END:VCALENDAR")
 
 
-def test_format_due_serializes_to_utc_timestamp(client: CalDAVClient) -> None:
+def test_format_due_serializes_to_utc_timestamp() -> None:
+    client = CalDAVClient(CALENDAR_CONFIG)
     due = datetime(2025, 6, 1, 0, 0, 0)
     assert client._format_due(due) == "20250601T000000Z"
 
 
-def test_task_from_data_parses_fields(client: CalDAVClient) -> None:
+def test_task_from_data_parses_fields() -> None:
+    client = CalDAVClient(CALENDAR_CONFIG)
     body = client._build_ics(
         "Review",
         datetime(2025, 2, 3, 4, 5, 6),
@@ -60,44 +65,46 @@ def test_task_from_data_parses_fields(client: CalDAVClient) -> None:
     assert task.categories == ["plan", "review"]
 
 
-def test_ensure_calendar_raises_when_not_initialized(client: CalDAVClient) -> None:
+def test_ensure_calendar_raises_when_not_initialized() -> None:
+    client = CalDAVClient(CALENDAR_CONFIG)
     with pytest.raises(RuntimeError):
         client._ensure_calendar()
 
 
-def test_ensure_calendar_returns_calendar_when_initialized(client: CalDAVClient) -> None:
+def test_ensure_calendar_returns_calendar_when_initialized() -> None:
+    client = CalDAVClient(CALENDAR_CONFIG)
     sentinel = object()
     client.calendar = sentinel
     assert client._ensure_calendar() is sentinel
 
 
-def test_create_task_persists_in_cache(client: CalDAVClient) -> None:
+async def test_create_task_persists_in_cache(client: CalDAVClient) -> None:
     payload = TaskPayload(summary="Persist")
-    created = client.create_task(payload)
-    cached = client.cache.get_task(created.uid)
+    created = await client.create_task(payload)
+    cached = await client.cache.get_task(created.uid)
     assert cached is not None
     assert cached.summary == payload.summary
-    assert client.cache.get_pending_action(created.uid) == "create"
+    assert await client.cache.get_pending_action(created.uid) == "create"
 
 
-def test_modify_task_marks_update_for_remote_task(client: CalDAVClient) -> None:
+async def test_modify_task_marks_update_for_remote_task(client: CalDAVClient) -> None:
     base = Task(uid="remote", summary="Remote")
-    client.cache.upsert_task(base)
+    await client.cache.upsert_task(base)
     patch = TaskPatch(summary="Remote v2")
-    updated = client.modify_task(base, patch)
+    updated = await client.modify_task(base, patch)
     assert updated.summary == "Remote v2"
-    assert client.cache.get_pending_action(base.uid) == "update"
+    assert await client.cache.get_pending_action(base.uid) == "update"
 
 
-def test_delete_unsynced_create_removes_cache_entry(client: CalDAVClient) -> None:
+async def test_delete_unsynced_create_removes_cache_entry(client: CalDAVClient) -> None:
     payload = TaskPayload(summary="Transient")
-    created = client.create_task(payload)
-    client.delete_task(created.uid)
-    assert client.cache.get_task(created.uid) is None
+    created = await client.create_task(payload)
+    await client.delete_task(created.uid)
+    assert await client.cache.get_task(created.uid) is None
 
 
-def test_delete_marks_remote_task_as_pending(client: CalDAVClient) -> None:
+async def test_delete_marks_remote_task_as_pending(client: CalDAVClient) -> None:
     existing = Task(uid="remote", summary="Remote")
-    client.cache.upsert_task(existing)
-    client.delete_task(existing.uid)
-    assert client.cache.get_pending_action(existing.uid) == "delete"
+    await client.cache.upsert_task(existing)
+    await client.delete_task(existing.uid)
+    assert await client.cache.get_pending_action(existing.uid) == "delete"

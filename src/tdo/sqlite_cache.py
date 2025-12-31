@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import sqlite3
-import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
+
+import aiosqlite
 
 from .models import Task
 
@@ -58,14 +57,23 @@ class SqliteTaskCache:
         resolved = self._resolve_path(path, env)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.path = resolved
-        self._conn = sqlite3.connect(
-            str(self.path),
-            detect_types=sqlite3.PARSE_DECLTYPES,
-            check_same_thread=False,
-        )
-        self._conn.row_factory = sqlite3.Row
-        self._lock = threading.Lock()
-        self._ensure_schema()
+        self._conn: aiosqlite.Connection | None = None
+
+    @classmethod
+    async def create(cls, path: Path | None = None, *, env: str = "default") -> SqliteTaskCache:
+        instance = cls(path, env=env)
+        await instance._connect()
+        return instance
+
+    async def _connect(self) -> None:
+        self._conn = await aiosqlite.connect(str(self.path))
+        self._conn.row_factory = aiosqlite.Row
+        await self._ensure_schema()
+
+    async def close(self) -> None:
+        if self._conn:
+            await self._conn.close()
+            self._conn = None
 
     @staticmethod
     def _resolve_path(path: Path | None, env: str) -> Path:
@@ -91,7 +99,7 @@ class SqliteTaskCache:
             return "default"
         return normalized
 
-    def _ensure_schema(self) -> None:
+    async def _ensure_schema(self) -> None:
         script = """
         CREATE TABLE IF NOT EXISTS tasks (
             uid TEXT PRIMARY KEY,
@@ -111,37 +119,33 @@ class SqliteTaskCache:
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_dirty ON tasks(pending_action);
         """
-        with self._lock:
-            self._conn.executescript(script)
-            self._conn.commit()
+        assert self._conn is not None
+        await self._conn.executescript(script)
+        await self._conn.commit()
 
-    def list_tasks(self) -> list[Task]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM tasks WHERE deleted = 0 ORDER BY due IS NULL, due"
-            ).fetchall()
+    async def list_tasks(self) -> list[Task]:
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT * FROM tasks WHERE deleted = 0 ORDER BY due IS NULL, due"
+        ) as cursor:
+            rows = await cursor.fetchall()
         return [self._build_task(row) for row in rows]
 
-    async def list_tasks_async(self) -> list[Task]:
-        return await asyncio.to_thread(self.list_tasks)
-
-    def dirty_tasks(self) -> list[DirtyTask]:
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM tasks WHERE pending_action IS NOT NULL ORDER BY updated_at"
-            ).fetchall()
+    async def dirty_tasks(self) -> list[DirtyTask]:
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT * FROM tasks WHERE pending_action IS NOT NULL ORDER BY updated_at"
+        ) as cursor:
+            rows = await cursor.fetchall()
         return [DirtyTask(task=self._build_task(row), action=row["pending_action"], deleted=bool(row["deleted"])) for row in rows]
 
-    async def dirty_tasks_async(self) -> list[DirtyTask]:
-        return await asyncio.to_thread(self.dirty_tasks)
-
-    def replace_remote_tasks(self, tasks: Sequence[Task]) -> None:
+    async def replace_remote_tasks(self, tasks: Sequence[Task]) -> None:
         timestamp = time.time()
-        with self._lock:
-            self._conn.execute("DELETE FROM tasks WHERE pending_action IS NULL")
-            self._conn.commit()
+        assert self._conn is not None
+        await self._conn.execute("DELETE FROM tasks WHERE pending_action IS NULL")
+        await self._conn.commit()
         for task in tasks:
-            self._insert_or_update(
+            await self._insert_or_update(
                 task,
                 pending_action=None,
                 deleted=False,
@@ -149,7 +153,7 @@ class SqliteTaskCache:
                 clear_pending=True,
             )
 
-    def upsert_task(
+    async def upsert_task(
         self,
         task: Task,
         *,
@@ -158,7 +162,7 @@ class SqliteTaskCache:
         last_synced: float | None = None,
         clear_pending: bool = False,
     ) -> None:
-        self._insert_or_update(
+        await self._insert_or_update(
             task,
             pending_action=pending_action,
             deleted=deleted,
@@ -166,26 +170,28 @@ class SqliteTaskCache:
             clear_pending=clear_pending,
         )
 
-    def delete_task(self, uid: str) -> None:
-        with self._lock:
-            self._conn.execute("DELETE FROM tasks WHERE uid = ?", (uid,))
-            self._conn.commit()
+    async def delete_task(self, uid: str) -> None:
+        assert self._conn is not None
+        await self._conn.execute("DELETE FROM tasks WHERE uid = ?", (uid,))
+        await self._conn.commit()
 
-    def get_task(self, uid: str) -> Task | None:
-        with self._lock:
-            row = self._conn.execute("SELECT * FROM tasks WHERE uid = ?", (uid,)).fetchone()
+    async def get_task(self, uid: str) -> Task | None:
+        assert self._conn is not None
+        async with self._conn.execute("SELECT * FROM tasks WHERE uid = ?", (uid,)) as cursor:
+            row = await cursor.fetchone()
         if not row:
             return None
         return self._build_task(row)
 
-    def get_pending_action(self, uid: str) -> str | None:
-        with self._lock:
-            row = self._conn.execute("SELECT pending_action FROM tasks WHERE uid = ?", (uid,)).fetchone()
+    async def get_pending_action(self, uid: str) -> str | None:
+        assert self._conn is not None
+        async with self._conn.execute("SELECT pending_action FROM tasks WHERE uid = ?", (uid,)) as cursor:
+            row = await cursor.fetchone()
         if not row:
             return None
         return row["pending_action"]
 
-    def _insert_or_update(
+    async def _insert_or_update(
         self,
         task: Task,
         *,
@@ -201,69 +207,70 @@ class SqliteTaskCache:
         x_props = _serialize_map(task.x_properties)
         categories = _serialize_properties(task.categories)
         href = task.href
-        with self._lock:
-            existing = self._conn.execute(
-                "SELECT pending_action, last_synced FROM tasks WHERE uid = ?",
-                (task.uid,)
-            ).fetchone()
-            if clear_pending:
-                resolved_pending = None
-            elif pending_action is not None:
-                resolved_pending = pending_action
-            else:
-                resolved_pending = existing["pending_action"] if existing else None
-            resolved_last_synced = last_synced if last_synced is not None else (existing["last_synced"] if existing else None)
-            now = time.time()
-            self._conn.execute(
-                """
-                INSERT INTO tasks (
-                    uid,
-                    summary,
-                    status,
-                    due,
-                    priority,
-                    x_properties,
-                    categories,
-                    href,
-                    pending_action,
-                    deleted,
-                    last_synced,
-                    updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(uid) DO UPDATE SET
-                    summary = excluded.summary,
-                    status = excluded.status,
-                    due = excluded.due,
-                    priority = excluded.priority,
-                    x_properties = excluded.x_properties,
-                    categories = excluded.categories,
-                    href = excluded.href,
-                    pending_action = ?,
-                    deleted = ?,
-                    last_synced = ?,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    task.uid,
-                    summary,
-                    status,
-                    due_value,
-                    priority,
-                    x_props,
-                    categories,
-                    href,
-                    resolved_pending,
-                    1 if deleted else 0,
-                    resolved_last_synced,
-                    now,
-                    resolved_pending,
-                    1 if deleted else 0,
-                    resolved_last_synced,
-                ),
-            )
-            self._conn.commit()
+        assert self._conn is not None
+        async with self._conn.execute(
+            "SELECT pending_action, last_synced FROM tasks WHERE uid = ?",
+            (task.uid,)
+        ) as cursor:
+            existing = await cursor.fetchone()
+        if clear_pending:
+            resolved_pending = None
+        elif pending_action is not None:
+            resolved_pending = pending_action
+        else:
+            resolved_pending = existing["pending_action"] if existing else None
+        resolved_last_synced = last_synced if last_synced is not None else (existing["last_synced"] if existing else None)
+        now = time.time()
+        await self._conn.execute(
+            """
+            INSERT INTO tasks (
+                uid,
+                summary,
+                status,
+                due,
+                priority,
+                x_properties,
+                categories,
+                href,
+                pending_action,
+                deleted,
+                last_synced,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(uid) DO UPDATE SET
+                summary = excluded.summary,
+                status = excluded.status,
+                due = excluded.due,
+                priority = excluded.priority,
+                x_properties = excluded.x_properties,
+                categories = excluded.categories,
+                href = excluded.href,
+                pending_action = ?,
+                deleted = ?,
+                last_synced = ?,
+                updated_at = excluded.updated_at
+            """,
+            (
+                task.uid,
+                summary,
+                status,
+                due_value,
+                priority,
+                x_props,
+                categories,
+                href,
+                resolved_pending,
+                1 if deleted else 0,
+                resolved_last_synced,
+                now,
+                resolved_pending,
+                1 if deleted else 0,
+                resolved_last_synced,
+            ),
+        )
+        await self._conn.commit()
 
-    def _build_task(self, row: sqlite3.Row) -> Task:
+    def _build_task(self, row: aiosqlite.Row) -> Task:
         due = None
         due_value = row["due"]
         if due_value:

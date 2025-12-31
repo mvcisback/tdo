@@ -34,6 +34,7 @@ class DummyClient:
 
     def __init__(self, config: CaldavConfig) -> None:
         self.config = config
+        self.cache = None
 
     @classmethod
     def reset(cls) -> None:
@@ -49,7 +50,10 @@ class DummyClient:
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         return None
 
-    def create_task(self, payload: TaskPayload) -> Task:
+    async def close(self) -> None:
+        pass
+
+    async def create_task(self, payload: TaskPayload) -> Task:
         DummyClient.last_payload = payload
         return Task(
             uid="dummy-task",
@@ -60,7 +64,7 @@ class DummyClient:
             categories=list(payload.categories or []),
         )
 
-    def modify_task(self, task: Task, patch: TaskPatch) -> Task:
+    async def modify_task(self, task: Task, patch: TaskPatch) -> Task:
         DummyClient.last_patch = patch
         DummyClient.last_modified_uid = task.uid
         categories = list(patch.categories or task.categories)
@@ -74,18 +78,26 @@ class DummyClient:
             href=task.href,
         )
 
-    def delete_task(self, uid: str) -> str:
+    async def delete_task(self, uid: str) -> str:
         DummyClient.deleted.append(uid)
         return uid
 
-    def list_tasks(self, force_refresh: bool = False) -> list[Task]:
+    async def list_tasks(self, force_refresh: bool = False) -> list[Task]:
         return list(DummyClient.list_entries)
+
+
+async def _mock_cache_client(env: str | None) -> DummyClient:
+    config = CaldavConfig(
+        calendar_url="https://example.com/cal",
+        username="tester",
+    )
+    return DummyClient(config)
 
 
 @pytest.fixture(autouse=True)
 def stub_cal_dav(monkeypatch: pytest.MonkeyPatch) -> None:
     DummyClient.reset()
-    monkeypatch.setattr(cli, "_CLIENT_FACTORY", DummyClient)
+    monkeypatch.setattr(cli, "_cache_client", _mock_cache_client)
     monkeypatch.setattr(
         cli,
         "load_config",
@@ -97,7 +109,7 @@ def stub_cal_dav(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         cli,
         "load_config_from_path",
-        lambda path: CaldavConfig(
+        lambda path, env=None: CaldavConfig(
             calendar_url="https://example.com/cal",
             username="tester",
         ),

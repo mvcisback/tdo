@@ -46,11 +46,17 @@ class CalDAVClient:
     cache_path: Path | None = field(default=None)
     client: "DAVClient" | None = field(default=None, init=False)
     calendar: "Calendar" | None = field(default=None, init=False)
-    cache: SqliteTaskCache = field(init=False)
+    cache: SqliteTaskCache | None = field(default=None, init=False)
 
-    def __post_init__(self) -> None:
+    @classmethod
+    async def create(cls, config: CaldavConfig, cache_path: Path | None = None) -> CalDAVClient:
+        instance = cls(config=config, cache_path=cache_path)
+        await instance._init_cache()
+        return instance
+
+    async def _init_cache(self) -> None:
         env = self.config.env or "default"
-        self.cache = SqliteTaskCache(self.cache_path, env=env)
+        self.cache = await SqliteTaskCache.create(self.cache_path, env=env)
 
     def __enter__(self) -> CalDAVClient:
         from caldav import DAVClient
@@ -82,10 +88,20 @@ class CalDAVClient:
         self.client = None
         self.calendar = None
 
-    def list_tasks(self, force_refresh: bool = False) -> list[Task]:
-        return self.cache.list_tasks()
+    async def close(self) -> None:
+        if self.cache:
+            await self.cache.close()
+            self.cache = None
 
-    def create_task(self, payload: TaskPayload) -> Task:
+    def _ensure_cache(self) -> SqliteTaskCache:
+        if self.cache is None:
+            raise RuntimeError("cache is not initialized; use CalDAVClient.create()")
+        return self.cache
+
+    async def list_tasks(self, force_refresh: bool = False) -> list[Task]:
+        return await self._ensure_cache().list_tasks()
+
+    async def create_task(self, payload: TaskPayload) -> Task:
         uid = self._uid_from_summary(payload.summary)
         categories = list(payload.categories) if payload.categories else []
         task = Task(
@@ -97,25 +113,26 @@ class CalDAVClient:
             x_properties=dict(payload.x_properties),
             categories=categories,
         )
-        self.cache.upsert_task(task, pending_action="create")
+        await self._ensure_cache().upsert_task(task, pending_action="create")
         return task
 
-    def modify_task(self, task: Task, patch: TaskPatch) -> Task:
+    async def modify_task(self, task: Task, patch: TaskPatch) -> Task:
         updated = self._apply_patch(task, patch)
-        pending_action = self.cache.get_pending_action(task.uid)
+        pending_action = await self._ensure_cache().get_pending_action(task.uid)
         action = "create" if pending_action == "create" else "update"
-        self.cache.upsert_task(updated, pending_action=action)
+        await self._ensure_cache().upsert_task(updated, pending_action=action)
         return updated
 
-    def delete_task(self, uid: str) -> str:
-        task = self.cache.get_task(uid)
+    async def delete_task(self, uid: str) -> str:
+        cache = self._ensure_cache()
+        task = await cache.get_task(uid)
         if task is None:
             raise KeyError(f"task {uid} not found")
-        pending_action = self.cache.get_pending_action(uid)
+        pending_action = await cache.get_pending_action(uid)
         if pending_action == "create":
-            self.cache.delete_task(uid)
+            await cache.delete_task(uid)
             return uid
-        self.cache.upsert_task(task, pending_action="delete", deleted=True)
+        await cache.upsert_task(task, pending_action="delete", deleted=True)
         return uid
 
     def _apply_patch(self, task: Task, patch: TaskPatch) -> Task:
@@ -138,19 +155,20 @@ class CalDAVClient:
             href=task.href,
         )
 
-    def pull(self) -> PullResult:
+    async def pull(self) -> PullResult:
         start = perf_counter()
         calendar = self._ensure_calendar()
         resources = calendar.todos()
         tasks = [self._task_from_resource(todo) for todo in resources]
-        self.cache.replace_remote_tasks(tasks)
+        await self._ensure_cache().replace_remote_tasks(tasks)
         elapsed = perf_counter() - start
         _debug_log("pull", elapsed, f"count={len(tasks)}")
         return PullResult(fetched=len(tasks))
 
-    def push(self) -> PushResult:
+    async def push(self) -> PushResult:
         start = perf_counter()
-        pending = self.cache.dirty_tasks()
+        cache = self._ensure_cache()
+        pending = await cache.dirty_tasks()
         created = 0
         updated = 0
         deleted = 0
@@ -160,7 +178,7 @@ class CalDAVClient:
                 if entry.action == "create":
                     created += 1
                     synced = self._push_create(entry.task, calendar)
-                    self.cache.upsert_task(
+                    await cache.upsert_task(
                         synced,
                         last_synced=time.time(),
                         clear_pending=True,
@@ -169,7 +187,7 @@ class CalDAVClient:
                 if entry.action == "update":
                     updated += 1
                     synced = self._push_update(entry.task, calendar)
-                    self.cache.upsert_task(
+                    await cache.upsert_task(
                         synced,
                         last_synced=time.time(),
                         clear_pending=True,
@@ -177,14 +195,14 @@ class CalDAVClient:
                     continue
                 deleted += 1
                 self._push_delete(entry.task, calendar)
-                self.cache.delete_task(entry.task.uid)
+                await cache.delete_task(entry.task.uid)
         elapsed = perf_counter() - start
         _debug_log("push", elapsed, f"pending={len(pending)}")
         return PushResult(created=created, updated=updated, deleted=deleted)
 
-    def sync(self) -> SyncResult:
-        pulled = self.pull()
-        pushed = self.push()
+    async def sync(self) -> SyncResult:
+        pulled = await self.pull()
+        pushed = await self.push()
         return SyncResult(pulled=pulled, pushed=pushed)
 
     def _ensure_calendar(self) -> "Calendar":
