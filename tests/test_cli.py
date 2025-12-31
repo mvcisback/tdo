@@ -321,10 +321,10 @@ def test_list_command_accepts_config_file(tmp_path, monkeypatch: pytest.MonkeyPa
 def test_config_init_command_writes_file(tmp_path) -> None:
     exit_code, stdout = run_cli(
         [
-            "config",
-            "init",
             "--env",
             "test",
+            "config",
+            "init",
             "--config-home",
             str(tmp_path),
             "--calendar-url",
@@ -335,8 +335,6 @@ def test_config_init_command_writes_file(tmp_path) -> None:
             "secret",
             "--token",
             "tok",
-            "--env",
-            "test",
             "--force",
         ]
     )

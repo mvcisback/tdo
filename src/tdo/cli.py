@@ -353,12 +353,27 @@ def _split_filter_and_command(argv: Sequence[str]) -> tuple[str | None, list[str
     candidates = list(argv)
     if not candidates:
         return None, ["list"]
-    first, rest = candidates[0], candidates[1:]
+
+    # Skip over --env value to find filter/command
+    idx = 0
+    while idx < len(candidates):
+        if candidates[idx] == "--env" and idx + 1 < len(candidates):
+            idx += 2  # Skip --env and its value
+            continue
+        break
+
+    remaining = candidates[idx:]
+    prefix = candidates[:idx]
+
+    if not remaining:
+        return None, prefix + ["list"]
+
+    first, rest = remaining[0], remaining[1:]
     if first in _COMMAND_NAMES:
-        return None, candidates
+        return None, prefix + remaining
     if _looks_like_filter_token(first):
-        return first, rest or ["list"]
-    return None, candidates
+        return first, prefix + (rest or ["list"])
+    return None, prefix + remaining
 
 
 def _parse_filter_indices(raw: str | None) -> list[str] | None:
@@ -564,47 +579,39 @@ def _handle_config_help(args: argparse.Namespace) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tdo")
+    parser.add_argument("--env", dest="env", help="env name")
     subparsers = parser.add_subparsers(dest="command")
 
     add_parser = subparsers.add_parser("add")
-    add_parser.add_argument("--env", dest="env", help="env name")
     add_parser.add_argument("tokens", nargs=argparse.REMAINDER, default=[], help="taskwarrior tokens")
     add_parser.set_defaults(func=_handle_add)
 
     modify_parser = subparsers.add_parser("modify")
-    modify_parser.add_argument("--env", dest="env", help="env name")
     modify_parser.add_argument("tokens", nargs=argparse.REMAINDER, default=[], help="taskwarrior tokens")
     modify_parser.set_defaults(func=_handle_modify)
 
     do_parser = subparsers.add_parser("do")
-    do_parser.add_argument("--env", dest="env", help="env name")
     do_parser.set_defaults(func=_handle_do)
 
     delete_parser = subparsers.add_parser("del")
-    delete_parser.add_argument("--env", dest="env", help="env name")
     delete_parser.set_defaults(func=_handle_delete)
 
     list_parser = subparsers.add_parser("list")
-    list_parser.add_argument("--env", dest="env", help="env name")
     list_parser.set_defaults(func=_handle_list)
 
     pull_parser = subparsers.add_parser("pull")
-    pull_parser.add_argument("--env", dest="env", help="env name")
     pull_parser.set_defaults(func=_handle_pull)
 
     push_parser = subparsers.add_parser("push")
-    push_parser.add_argument("--env", dest="env", help="env name")
     push_parser.set_defaults(func=_handle_push)
 
     sync_parser = subparsers.add_parser("sync")
-    sync_parser.add_argument("--env", dest="env", help="env name")
     sync_parser.set_defaults(func=_handle_sync)
 
     config_parser = subparsers.add_parser("config")
     config_parser.set_defaults(func=_handle_config_help, parser=config_parser)
     config_subparsers = config_parser.add_subparsers(dest="subcommand")
     init_parser = config_subparsers.add_parser("init")
-    init_parser.add_argument("--env", dest="env", help="environment name")
     init_parser.add_argument(
         "--config-home",
         dest="config_home",
