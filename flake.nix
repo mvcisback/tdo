@@ -80,6 +80,7 @@ exec ${pkgs.radicale}/bin/radicale
       {
         devShells.default = pkgs.mkShell {
           packages = [
+            pkgs.cz-cli
             pkgs.uv
             venv
           ];
