@@ -10,7 +10,7 @@ from typing import Sequence
 
 import aiosqlite
 
-from .models import Task
+from .models import Task, TaskFilter
 
 
 @dataclass
@@ -202,6 +202,30 @@ class SqliteTaskCache:
         async with self._conn.execute(
             "SELECT * FROM tasks WHERE deleted = 0 ORDER BY due IS NULL, due"
         ) as cursor:
+            rows = await cursor.fetchall()
+        return [self._build_task(row) for row in rows]
+
+    async def list_tasks_filtered(self, task_filter: TaskFilter | None = None) -> list[Task]:
+        assert self._conn is not None
+        conditions = ["deleted = 0"]
+        params: list[str] = []
+
+        if task_filter:
+            if task_filter.project:
+                conditions.append("json_extract(x_properties, '$.X-PROJECT') = ?")
+                params.append(task_filter.project)
+            for tag in task_filter.tags:
+                conditions.append("categories LIKE ?")
+                params.append(f'%"{tag}"%')
+            if task_filter.indices:
+                placeholders = ",".join("?" for _ in task_filter.indices)
+                conditions.append(f"task_index IN ({placeholders})")
+                params.extend(str(i) for i in task_filter.indices)
+
+        where = " AND ".join(conditions)
+        query = f"SELECT * FROM tasks WHERE {where} ORDER BY due IS NULL, due"
+
+        async with self._conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
         return [self._build_task(row) for row in rows]
 

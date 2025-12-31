@@ -91,6 +91,21 @@ class DummyClient:
     async def list_tasks(self, force_refresh: bool = False) -> list[Task]:
         return list(DummyClient.list_entries)
 
+    async def list_tasks_filtered(self, task_filter: "TaskFilter | None" = None) -> list[Task]:
+        from tdo.models import TaskFilter
+        tasks = list(DummyClient.list_entries)
+        if not task_filter:
+            return tasks
+        # Simple filtering for tests
+        result = tasks
+        if task_filter.project:
+            result = [t for t in result if t.x_properties.get("X-PROJECT") == task_filter.project]
+        for tag in task_filter.tags:
+            result = [t for t in result if tag in t.categories]
+        if task_filter.indices:
+            result = [t for t in result if t.task_index in task_filter.indices]
+        return result
+
 
 async def _mock_cache_client(env: str | None) -> DummyClient:
     config = CaldavConfig(

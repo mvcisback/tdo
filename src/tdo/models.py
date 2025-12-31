@@ -50,3 +50,10 @@ class TaskPatch:
             or self.x_properties
             or self.categories is not None
         )
+
+
+@dataclass
+class TaskFilter:
+    project: str | None = None
+    tags: list[str] = field(default_factory=list)
+    indices: list[int] = field(default_factory=list)

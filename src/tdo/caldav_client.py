@@ -109,6 +109,10 @@ class CalDAVClient:
     async def list_tasks(self, force_refresh: bool = False) -> list[Task]:
         return await self._ensure_cache().list_tasks()
 
+    async def list_tasks_filtered(self, task_filter: "TaskFilter | None" = None) -> list[Task]:
+        from .models import TaskFilter
+        return await self._ensure_cache().list_tasks_filtered(task_filter)
+
     async def create_task(self, payload: TaskPayload) -> Task:
         uid = self._uid_from_summary(payload.summary)
         categories = list(payload.categories) if payload.categories else []

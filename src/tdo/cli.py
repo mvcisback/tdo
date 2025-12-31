@@ -20,7 +20,7 @@ from .config import (
     load_config_from_path,
     write_config_file,
 )
-from .models import Task, TaskPatch, TaskPayload
+from .models import Task, TaskFilter, TaskPatch, TaskPayload
 from .time_parser import parse_due_value
 from .update_descriptor import UpdateDescriptor
 from .update_linear_parser import parse_update
@@ -362,7 +362,8 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
 _COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "show", "sync"}
 
 
-def _looks_like_filter_token(value: str) -> bool:
+def _looks_like_index_filter(value: str) -> bool:
+    """Check if value looks like numeric indices (e.g., '1,2,3')."""
     if not value:
         return False
     segments = [segment.strip() for segment in value.split(",")]
@@ -372,10 +373,35 @@ def _looks_like_filter_token(value: str) -> bool:
     return all(segment.isdigit() for segment in normalized)
 
 
-def _split_filter_and_command(argv: Sequence[str]) -> tuple[str | None, list[str]]:
+def _looks_like_metadata_filter(value: str) -> bool:
+    """Check if value looks like a metadata filter (project:X, +tag)."""
+    if not value:
+        return False
+    # +tag or -tag (for filtering)
+    if value.startswith("+") and len(value) > 1:
+        return True
+    # project:value
+    if value.startswith("project:"):
+        return True
+    return False
+
+
+def _looks_like_filter_token(value: str) -> bool:
+    """Check if value is any kind of filter token."""
+    return _looks_like_index_filter(value) or _looks_like_metadata_filter(value)
+
+
+def _split_filter_and_command(argv: Sequence[str]) -> tuple[list[str], list[str]]:
+    """Split argv into filter tokens and command tokens.
+
+    Returns (filter_tokens, command_tokens) where filter_tokens can include:
+    - Numeric indices: "1,2,3"
+    - Project filter: "project:tdo"
+    - Tag filter: "+easy"
+    """
     candidates = list(argv)
     if not candidates:
-        return None, ["list"]
+        return [], ["list"]
 
     # Skip over --env value to find filter/command
     idx = 0
@@ -389,14 +415,50 @@ def _split_filter_and_command(argv: Sequence[str]) -> tuple[str | None, list[str
     prefix = candidates[:idx]
 
     if not remaining:
-        return None, prefix + ["list"]
+        return [], prefix + ["list"]
 
-    first, rest = remaining[0], remaining[1:]
-    if first in _COMMAND_NAMES:
-        return None, prefix + remaining
-    if _looks_like_filter_token(first):
-        return first, prefix + (rest or ["list"])
-    return None, prefix + remaining
+    # Collect all filter tokens before the command
+    filter_tokens: list[str] = []
+    while remaining:
+        token = remaining[0]
+        if token in _COMMAND_NAMES:
+            break
+        if _looks_like_filter_token(token):
+            filter_tokens.append(token)
+            remaining = remaining[1:]
+        else:
+            break
+
+    if not remaining:
+        remaining = ["list"]
+
+    return filter_tokens, prefix + remaining
+
+
+def _parse_task_filter(tokens: list[str]) -> TaskFilter | None:
+    """Parse filter tokens into a TaskFilter object."""
+    if not tokens:
+        return None
+
+    project: str | None = None
+    tags: list[str] = []
+    indices: list[int] = []
+
+    for token in tokens:
+        if token.startswith("project:"):
+            project = token[8:]  # len("project:") = 8
+        elif token.startswith("+") and len(token) > 1:
+            tags.append(token[1:])
+        elif _looks_like_index_filter(token):
+            for segment in token.split(","):
+                segment = segment.strip()
+                if segment.isdigit():
+                    indices.append(int(segment))
+
+    if not project and not tags and not indices:
+        return None
+
+    return TaskFilter(project=project, tags=tags, indices=indices)
 
 
 def _parse_filter_indices(raw: str | None) -> list[str] | None:
@@ -528,19 +590,23 @@ async def _handle_list(args: argparse.Namespace) -> None:
     config = _resolve_config(args.env)
     client = await _cache_client(args.env)
     try:
-        tasks = await client.list_tasks()
+        # Use filtered query if metadata filters are provided
+        task_filter = getattr(args, "task_filter", None)
+        if task_filter:
+            tasks = await client.list_tasks_filtered(task_filter)
+        else:
+            tasks = await client.list_tasks()
         if not tasks:
-            print("no cached tasks found; run 'tdo pull' to synchronize")
+            if task_filter:
+                print("no tasks match filter")
+            else:
+                print("no cached tasks found; run 'tdo pull' to synchronize")
             return
         active_tasks = _filter_active_tasks(tasks)
-        filtered_tasks = _select_tasks_for_filter(
-            active_tasks,
-            _effective_filter_indices(args.filter_indices),
-        )
-        if not filtered_tasks:
+        if not active_tasks:
             print("no tasks match filter")
             return
-        _pretty_print_tasks(filtered_tasks, config.show_uids)
+        _pretty_print_tasks(active_tasks, config.show_uids)
     finally:
         await client.close()
 
@@ -714,7 +780,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 async def _async_main(argv: Sequence[str] | None = None) -> int:
     input_args = list(argv if argv is not None else sys.argv[1:])
-    filter_raw, command_tokens = _split_filter_and_command(input_args)
+    filter_tokens, command_tokens = _split_filter_and_command(input_args)
     parser = _build_parser()
     args, remaining = parser.parse_known_args(command_tokens)
     if remaining:
@@ -723,7 +789,13 @@ async def _async_main(argv: Sequence[str] | None = None) -> int:
             args.tokens = list(tokens_value) + remaining
         else:
             parser.error(f"unrecognized arguments: {' '.join(remaining)}")
-    args.filter_indices = _parse_filter_indices(filter_raw)
+    # Parse filter tokens into TaskFilter
+    args.task_filter = _parse_task_filter(filter_tokens)
+    # Backward compatibility: extract indices for commands that use filter_indices
+    if args.task_filter and args.task_filter.indices:
+        args.filter_indices = [str(i) for i in args.task_filter.indices]
+    else:
+        args.filter_indices = None
     handler = getattr(args, "func", None)
     if handler is None:
         parser.print_help()
