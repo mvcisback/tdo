@@ -1,3 +1,27 @@
+## 0.4.0 (2025-12-30)
+
+### Feat
+
+- Implement stable task indices
+- **ui**: back background grey on even rows.
+- **ui**: Relax input syntax to allow interspersing tags and tokens.
+
+### Fix
+
+- Move --env to main parser to avoid issues.
+- caches are scoped by env now.
+- Scope keyring service to the env variable.
+- Robustly set keyring name.
+
+### Refactor
+
+- Combine description, metadata, and other parsing logic.
+- Remove unused index in update descriptor.
+
+### Perf
+
+- Switch to async interfaces, particularly for sqlite.
+
 ## 0.3.0 (2025-12-28)
 
 ### Feat
