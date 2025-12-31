@@ -1,3 +1,15 @@
+## 0.5.0 (2025-12-30)
+
+### Feat
+
+- Allow unsetting fields with empty values
+- Add show command for detailed task view
+
+### Refactor
+
+- Use DTSTART instead of X-WAIT for wait functionality
+- Unify date/duration parsing for due and wait
+
 ## 0.4.0 (2025-12-30)
 
 ### Feat
