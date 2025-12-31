@@ -20,7 +20,7 @@ from .config import (
     write_config_file,
 )
 from .models import Task, TaskPatch, TaskPayload
-from .time_parser import parse_due_value, parse_wait_value
+from .time_parser import parse_due_value
 from .update_descriptor import UpdateDescriptor
 from .update_linear_parser import parse_update
 
@@ -148,9 +148,9 @@ def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
     if descriptor.project:
         x_properties["X-PROJECT"] = descriptor.project
     if descriptor.wait:
-        wait_value = descriptor.wait.strip()
-        if wait_value:
-            x_properties["X-WAIT"] = wait_value
+        wait_dt = _resolve_due_value(descriptor.wait)
+        if wait_dt:
+            x_properties["X-WAIT"] = wait_dt.isoformat()
     return TaskPayload(
         summary=summary,
         priority=descriptor.priority,
@@ -185,9 +185,9 @@ def _build_patch_from_descriptor(
     if descriptor.project:
         x_properties["X-PROJECT"] = descriptor.project
     if descriptor.wait:
-        wait_value = descriptor.wait.strip()
-        if wait_value and parse_wait_value(wait_value) is not None:
-            x_properties["X-WAIT"] = wait_value
+        wait_dt = _resolve_due_value(descriptor.wait)
+        if wait_dt:
+            x_properties["X-WAIT"] = wait_dt.isoformat()
     patch.x_properties = x_properties
     return patch
 

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from datetime import timedelta
-
 import arrow
 import pytest
 
-from tdo.time_parser import parse_due_value, parse_wait_value
+from tdo.time_parser import parse_due_value
 
 
 REFERENCE = arrow.get("2025-05-15T10:30:00")
@@ -80,14 +78,6 @@ def test_parse_due_physical_datetimes() -> None:
     assert parse_due_value("5pm", REFERENCE).hour == 17
 
 
-def test_parse_wait_value_variants() -> None:
-    assert parse_wait_value("2d") == timedelta(days=2)
-    assert parse_wait_value("90m") == timedelta(minutes=90)
-    assert parse_wait_value("P1DT2H") == timedelta(days=1, hours=2)
-    assert parse_wait_value("P1Y2M") == timedelta(days=365 + 60)
-    assert parse_wait_value("invalid") is None
-
-
 @pytest.mark.parametrize(
     "token,expected",
     [
@@ -148,25 +138,33 @@ def test_parse_due_iso_and_invalid_formats() -> None:
     assert parse_due_value("not-a-date", REFERENCE) is None
 
 
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        ("30s", timedelta(seconds=30)),
-        ("1.5h", timedelta(hours=1, minutes=30)),
-        ("P1DT2H", timedelta(days=1, hours=2)),
-        ("P2.5W", timedelta(days=17, hours=12)),
-        ("P1Y2M3DT4H5M6S", timedelta(days=428, hours=4, minutes=5, seconds=6)),
-        ("PT90M", timedelta(minutes=90)),
-    ],
-)
-def test_parse_wait_value_various_formats(value: str, expected: timedelta) -> None:
-    assert parse_wait_value(value) == expected
+def test_parse_due_relative_durations() -> None:
+    result_2w = parse_due_value("2w", REFERENCE)
+    assert result_2w is not None
+    assert result_2w == REFERENCE.shift(weeks=2)
+
+    result_3d = parse_due_value("3d", REFERENCE)
+    assert result_3d is not None
+    assert result_3d == REFERENCE.shift(days=3)
+
+    result_1y = parse_due_value("1y", REFERENCE)
+    assert result_1y is not None
+    assert result_1y == REFERENCE.shift(days=365)
+
+    result_2h = parse_due_value("2h", REFERENCE)
+    assert result_2h is not None
+    assert result_2h == REFERENCE.shift(hours=2)
 
 
-def test_parse_wait_value_empty_and_zero() -> None:
-    assert parse_wait_value("") is None
-    assert parse_wait_value("PT0S") is None
+def test_parse_due_iso_durations() -> None:
+    result_p1d = parse_due_value("P1D", REFERENCE)
+    assert result_p1d is not None
+    assert result_p1d == REFERENCE.shift(days=1)
 
+    result_p2w = parse_due_value("P2W", REFERENCE)
+    assert result_p2w is not None
+    assert result_p2w == REFERENCE.shift(weeks=2)
 
-def test_parse_wait_value_rejects_bad_input() -> None:
-    assert parse_wait_value("invalid string") is None
+    result_p1y = parse_due_value("P1Y", REFERENCE)
+    assert result_p1y is not None
+    assert result_p1y == REFERENCE.shift(days=365)

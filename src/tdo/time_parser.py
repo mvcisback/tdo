@@ -8,7 +8,7 @@ import arrow
 from arrow.parser import ParserError
 from pytimeparse import parse as parse_duration
 
-__all__ = ["parse_due_value", "parse_wait_value"]
+__all__ = ["parse_due_value"]
 
 _LATER = arrow.get("2038-01-18T00:00:00")
 _WEEKDAY_MAP = {
@@ -61,6 +61,34 @@ _TIME_OF_DAY_RE = re.compile(
     r"^(?P<h>\d{1,2})(?::(?P<m>\d{1,2}))?(?::(?P<s>\d{1,2}))?\s*(?P<suffix>a|am|p|pm)?$",
     re.IGNORECASE,
 )
+_YEAR_DURATION_RE = re.compile(r"^(\d+)y$", re.IGNORECASE)
+
+
+def _parse_relative_duration(raw: str) -> timedelta | None:
+    """Parse shorthand durations like 2w, 3d, 1y into timedelta."""
+    candidate = raw.strip()
+    if not candidate:
+        return None
+
+    # Reject patterns with colons - those should be parsed as time-of-day
+    if ":" in candidate:
+        return None
+
+    # Handle ISO 8601 duration format (P1D, P2W, etc.)
+    upper = candidate.upper()
+    if upper.startswith("P"):
+        return _parse_iso_duration(upper)
+
+    # Handle year shorthand (not supported by pytimeparse)
+    if match := _YEAR_DURATION_RE.fullmatch(candidate):
+        return timedelta(days=int(match.group(1)) * 365)
+
+    # Use pytimeparse for standard durations (s, m, h, d, w)
+    seconds = parse_duration(candidate)
+    if seconds is not None:
+        return timedelta(seconds=seconds)
+
+    return None
 
 
 def parse_due_value(raw: str, reference: arrow.Arrow | None = None) -> arrow.Arrow | None:
@@ -79,27 +107,17 @@ def parse_due_value(raw: str, reference: arrow.Arrow | None = None) -> arrow.Arr
         return _previous_month_start(now, _MONTH_MAP[lowered])
     if lowered.isdigit():
         return arrow.get(int(lowered))
+
+    # Try parsing as relative duration (2w, 3d, 1y, P1D, etc.)
+    if duration := _parse_relative_duration(candidate):
+        return now.shift(seconds=duration.total_seconds())
+
     try:
         return arrow.get(candidate)
     except (ParserError, ValueError):
         if parsed := _parse_time_of_day(candidate, now):
             return parsed
         return None
-
-
-def parse_wait_value(raw: str) -> timedelta | None:
-    candidate = (raw or "").strip()
-    if not candidate:
-        return None
-    upper = candidate.upper()
-    if upper.startswith("P"):
-        duration = _parse_iso_duration(upper)
-        if duration is not None:
-            return duration
-    seconds = parse_duration(candidate)
-    if seconds is None:
-        return None
-    return timedelta(seconds=seconds)
 
 
 def _start_of_day(value: arrow.Arrow) -> arrow.Arrow:
