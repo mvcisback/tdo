@@ -6,50 +6,26 @@ from typing import Dict, Optional
 
 
 @dataclass
-class Task:
-    uid: str
-    summary: str
-    status: str = "IN-PROCESS"
+class TaskData:
+    summary: str | None = None
+    status: str | None = None
     due: Optional[datetime] = None
     wait: Optional[datetime] = None
     priority: Optional[int] = None
     x_properties: Dict[str, str] = field(default_factory=dict)
-    categories: list[str] = field(default_factory=list)
+    categories: list[str] | None = None
+
+
+@dataclass
+class Task:
+    uid: str
+    data: TaskData
     href: str | None = None
     task_index: int | None = None
 
 
-@dataclass
-class TaskPayload:
-    summary: str
-    status: str = "IN-PROCESS"
-    due: Optional[datetime] = None
-    wait: Optional[datetime] = None
-    priority: Optional[int] = None
-    x_properties: Dict[str, str] = field(default_factory=dict)
-    categories: list[str] | None = None
-
-
-@dataclass
-class TaskPatch:
-    summary: Optional[str] = None
-    status: Optional[str] = None
-    due: Optional[datetime] = None
-    wait: Optional[datetime] = None
-    priority: Optional[int] = None
-    x_properties: Dict[str, str] = field(default_factory=dict)
-    categories: list[str] | None = None
-
-    def has_changes(self) -> bool:
-        return bool(
-            self.summary
-            or self.status
-            or self.priority is not None
-            or self.due is not None
-            or self.wait is not None
-            or self.x_properties
-            or self.categories is not None
-        )
+TaskPayload = TaskData
+TaskPatch = TaskData
 
 
 @dataclass

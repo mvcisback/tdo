@@ -10,7 +10,7 @@ from typing import Sequence
 
 import aiosqlite
 
-from .models import Task, TaskFilter
+from .models import Task, TaskData, TaskFilter
 
 
 @dataclass
@@ -321,13 +321,13 @@ class SqliteTaskCache:
         clear_pending: bool,
         task_index: int | None = None,
     ) -> None:
-        summary = task.summary or task.uid
-        status = task.status or "IN-PROCESS"
-        due_value = task.due.isoformat() if task.due else None
-        wait_value = task.wait.isoformat() if task.wait else None
-        priority = task.priority
-        x_props = _serialize_map(task.x_properties)
-        categories = _serialize_properties(task.categories)
+        summary = task.data.summary or task.uid
+        status = task.data.status or "IN-PROCESS"
+        due_value = task.data.due.isoformat() if task.data.due else None
+        wait_value = task.data.wait.isoformat() if task.data.wait else None
+        priority = task.data.priority
+        x_props = _serialize_map(task.data.x_properties)
+        categories = _serialize_properties(task.data.categories)
         href = task.href
         assert self._conn is not None
         async with self._conn.execute(
@@ -417,13 +417,15 @@ class SqliteTaskCache:
                 wait = None
         return Task(
             uid=row["uid"],
-            summary=row["summary"],
-            status=row["status"],
-            due=due,
-            wait=wait,
-            priority=row["priority"],
-            x_properties=_parse_json(row["x_properties"]),
-            categories=_parse_list(row["categories"]),
+            data=TaskData(
+                summary=row["summary"],
+                status=row["status"],
+                due=due,
+                wait=wait,
+                priority=row["priority"],
+                x_properties=_parse_json(row["x_properties"]),
+                categories=_parse_list(row["categories"]),
+            ),
             href=row["href"],
             task_index=row["task_index"],
         )

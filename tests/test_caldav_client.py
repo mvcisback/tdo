@@ -7,7 +7,7 @@ import pytest
 
 from tdo.caldav_client import CalDAVClient
 from tdo.config import CaldavConfig
-from tdo.models import Task, TaskPatch, TaskPayload
+from tdo.models import Task, TaskData, TaskPatch, TaskPayload
 
 
 CALENDAR_CONFIG = CaldavConfig(calendar_url="https://example.com/calendars/main", username="alice")
@@ -60,12 +60,12 @@ def test_task_from_data_parses_fields() -> None:
     )
     task = client._task_from_data(body)
     assert task.uid == "task-100"
-    assert task.summary == "Review"
-    assert task.priority == 4
-    assert task.x_properties.get("X-ORG") == "dev"
-    assert task.due == datetime(2025, 2, 3, 4, 5, 6)
-    assert task.wait == datetime(2025, 1, 15, 0, 0, 0)
-    assert task.categories == ["plan", "review"]
+    assert task.data.summary == "Review"
+    assert task.data.priority == 4
+    assert task.data.x_properties.get("X-ORG") == "dev"
+    assert task.data.due == datetime(2025, 2, 3, 4, 5, 6)
+    assert task.data.wait == datetime(2025, 1, 15, 0, 0, 0)
+    assert task.data.categories == ["plan", "review"]
 
 
 def test_ensure_calendar_raises_when_not_initialized() -> None:
@@ -86,16 +86,16 @@ async def test_create_task_persists_in_cache(client: CalDAVClient) -> None:
     created = await client.create_task(payload)
     cached = await client.cache.get_task(created.uid)
     assert cached is not None
-    assert cached.summary == payload.summary
+    assert cached.data.summary == payload.summary
     assert await client.cache.get_pending_action(created.uid) == "create"
 
 
 async def test_modify_task_marks_update_for_remote_task(client: CalDAVClient) -> None:
-    base = Task(uid="remote", summary="Remote")
+    base = Task(uid="remote", data=TaskData(summary="Remote"))
     await client.cache.upsert_task(base)
     patch = TaskPatch(summary="Remote v2")
     updated = await client.modify_task(base, patch)
-    assert updated.summary == "Remote v2"
+    assert updated.data.summary == "Remote v2"
     assert await client.cache.get_pending_action(base.uid) == "update"
 
 
@@ -107,7 +107,7 @@ async def test_delete_unsynced_create_removes_cache_entry(client: CalDAVClient) 
 
 
 async def test_delete_marks_remote_task_as_pending(client: CalDAVClient) -> None:
-    existing = Task(uid="remote", summary="Remote")
+    existing = Task(uid="remote", data=TaskData(summary="Remote"))
     await client.cache.upsert_task(existing)
     await client.delete_task(existing.uid)
     assert await client.cache.get_pending_action(existing.uid) == "delete"

@@ -9,7 +9,7 @@ from typing import Dict, TYPE_CHECKING
 from uuid import uuid4
 
 from .config import CaldavConfig
-from .models import Task, TaskPatch, TaskPayload
+from .models import Task, TaskData, TaskPatch, TaskPayload
 from .sqlite_cache import DirtyTask, SqliteTaskCache
 
 if TYPE_CHECKING:
@@ -118,13 +118,15 @@ class CalDAVClient:
         categories = list(payload.categories) if payload.categories else []
         task = Task(
             uid=uid,
-            summary=payload.summary,
-            status=payload.status or "IN-PROCESS",
-            due=payload.due,
-            wait=payload.wait,
-            priority=payload.priority,
-            x_properties=dict(payload.x_properties),
-            categories=categories,
+            data=TaskData(
+                summary=payload.summary,
+                status=payload.status or "IN-PROCESS",
+                due=payload.due,
+                wait=payload.wait,
+                priority=payload.priority,
+                x_properties=dict(payload.x_properties),
+                categories=categories,
+            ),
         )
         cache = self._ensure_cache()
         await cache.upsert_task(task, pending_action="create")
@@ -153,42 +155,44 @@ class CalDAVClient:
         return uid
 
     def _apply_patch(self, task: Task, patch: TaskPatch) -> Task:
-        summary = patch.summary or task.summary or task.uid
+        summary = patch.summary or task.data.summary or task.uid
         # Handle sentinel values for "unset"
         if patch.due == _UNSET_DATETIME:
             due = None
         elif patch.due is not None:
             due = patch.due
         else:
-            due = task.due
+            due = task.data.due
         if patch.wait == _UNSET_DATETIME:
             wait = None
         elif patch.wait is not None:
             wait = patch.wait
         else:
-            wait = task.wait
+            wait = task.data.wait
         if patch.priority == 0:
             priority = None  # 0 means unset priority
         elif patch.priority is not None:
             priority = patch.priority
         else:
-            priority = task.priority
-        status = patch.status or task.status
-        x_properties = dict(task.x_properties)
+            priority = task.data.priority
+        status = patch.status or task.data.status
+        x_properties = dict(task.data.x_properties)
         x_properties.update(patch.x_properties)
         # Remove properties with empty values (signals deletion)
         x_properties = {k: v for k, v in x_properties.items() if v}
-        categories = patch.categories if patch.categories is not None else task.categories
-        categories = list(categories)
+        categories = patch.categories if patch.categories is not None else task.data.categories
+        categories = list(categories or [])
         return Task(
             uid=task.uid,
-            summary=summary,
-            status=status,
-            due=due,
-            wait=wait,
-            priority=priority,
-            x_properties=x_properties,
-            categories=categories,
+            data=TaskData(
+                summary=summary,
+                status=status,
+                due=due,
+                wait=wait,
+                priority=priority,
+                x_properties=x_properties,
+                categories=categories,
+            ),
             href=task.href,
             task_index=task.task_index,
         )
@@ -251,21 +255,21 @@ class CalDAVClient:
 
     def _push_create(self, task: Task, calendar: "Calendar") -> Task:
         body = self._build_ics(
-            task.summary,
-            task.due,
-            task.wait,
-            task.priority,
-            task.x_properties,
-            task.categories,
+            task.data.summary,
+            task.data.due,
+            task.data.wait,
+            task.data.priority,
+            task.data.x_properties,
+            task.data.categories,
             task.uid,
-            task.status,
+            task.data.status,
         )
         todo = calendar.add_todo(body)
         return self._task_from_resource(todo)
 
     def _push_update(self, task: Task, calendar: "Calendar") -> Task:
-        summary = task.summary or task.uid
-        body = self._build_ics(summary, task.due, task.wait, task.priority, task.x_properties, task.categories, task.uid, task.status)
+        summary = task.data.summary or task.uid
+        body = self._build_ics(summary, task.data.due, task.data.wait, task.data.priority, task.data.x_properties, task.data.categories, task.uid, task.data.status)
         resource = self._resource_for_update(task, calendar)
         resource.id = task.uid
         resource.data = body
@@ -365,13 +369,15 @@ class CalDAVClient:
                 x_properties[key] = value
         return Task(
             uid=uid,
-            summary=summary,
-            status=status or "IN-PROCESS",
-            due=due,
-            wait=wait,
-            priority=priority,
-            x_properties=x_properties,
-            categories=categories,
+            data=TaskData(
+                summary=summary,
+                status=status or "IN-PROCESS",
+                due=due,
+                wait=wait,
+                priority=priority,
+                x_properties=x_properties,
+                categories=categories,
+            ),
         )
 
     def _parse_due(self, raw: str) -> datetime | None:

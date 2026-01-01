@@ -9,7 +9,7 @@ import pytest
 
 from tdo import cli
 from tdo.config import CaldavConfig
-from tdo.models import Task, TaskPatch, TaskPayload
+from tdo.models import Task, TaskData, TaskPatch, TaskPayload
 
 
 def run_cli(arguments: list[str]) -> tuple[int, str]:
@@ -28,7 +28,7 @@ class DummyClient:
     last_modified_uid: str | None = None
     deleted: list[str] = []
     default_tasks: list[Task] = [
-        Task(uid="list-task", summary="List task", due=None, priority=3, task_index=1)
+        Task(uid="list-task", data=TaskData(summary="List task", due=None, priority=3), task_index=1)
     ]
     list_entries: list[Task] = list(default_tasks)
     _next_index: int = 1
@@ -61,25 +61,29 @@ class DummyClient:
         DummyClient._next_index += 1
         return Task(
             uid="dummy-task",
-            summary=payload.summary,
-            due=payload.due,
-            priority=payload.priority,
-            x_properties=payload.x_properties,
-            categories=list(payload.categories or []),
+            data=TaskData(
+                summary=payload.summary,
+                due=payload.due,
+                priority=payload.priority,
+                x_properties=payload.x_properties,
+                categories=list(payload.categories or []),
+            ),
             task_index=task_index,
         )
 
     async def modify_task(self, task: Task, patch: TaskPatch) -> Task:
         DummyClient.last_patch = patch
         DummyClient.last_modified_uid = task.uid
-        categories = list(patch.categories or task.categories)
+        categories = list(patch.categories or task.data.categories or [])
         return Task(
             uid=task.uid,
-            summary=patch.summary or task.summary or task.uid,
-            due=patch.due,
-            priority=patch.priority,
-            x_properties=patch.x_properties,
-            categories=categories,
+            data=TaskData(
+                summary=patch.summary or task.data.summary or task.uid,
+                due=patch.due,
+                priority=patch.priority,
+                x_properties=patch.x_properties,
+                categories=categories,
+            ),
             href=task.href,
             task_index=task.task_index,
         )
@@ -99,9 +103,9 @@ class DummyClient:
         # Simple filtering for tests
         result = tasks
         if task_filter.project:
-            result = [t for t in result if t.x_properties.get("X-PROJECT") == task_filter.project]
+            result = [t for t in result if t.data.x_properties.get("X-PROJECT") == task_filter.project]
         for tag in task_filter.tags:
-            result = [t for t in result if tag in t.categories]
+            result = [t for t in result if tag in (t.data.categories or [])]
         if task_filter.indices:
             result = [t for t in result if t.task_index in task_filter.indices]
         return result
@@ -212,9 +216,9 @@ def test_modify_command_adds_tag_without_other_changes() -> None:
 
 def test_delete_command_accepts_filter_indices() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="Alpha", due=None, priority=1, task_index=1),
-        Task(uid="second", summary="Bravo", due=None, priority=1, task_index=2),
-        Task(uid="third", summary="Charlie", due=None, priority=1, task_index=3),
+        Task(uid="first", data=TaskData(summary="Alpha", due=None, priority=1), task_index=1),
+        Task(uid="second", data=TaskData(summary="Bravo", due=None, priority=1), task_index=2),
+        Task(uid="third", data=TaskData(summary="Charlie", due=None, priority=1), task_index=3),
     ]
     exit_code, stdout = run_cli(["1,3", "del"])
     assert exit_code == 0
@@ -225,8 +229,8 @@ def test_delete_command_accepts_filter_indices() -> None:
 
 def test_delete_command_accepts_numeric_identifiers() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="First", due=None, priority=1, task_index=1),
-        Task(uid="second", summary="Second", due=None, priority=2, task_index=2),
+        Task(uid="first", data=TaskData(summary="First", due=None, priority=1), task_index=1),
+        Task(uid="second", data=TaskData(summary="Second", due=None, priority=2), task_index=2),
     ]
     exit_code, stdout = run_cli(["1", "del"])
     assert exit_code == 0
@@ -244,8 +248,8 @@ def test_list_command_outputs_tasks() -> None:
 
 def test_list_command_hides_completed_tasks() -> None:
     DummyClient.list_entries = [
-        Task(uid="active", summary="Active task", due=None, priority=1, task_index=1),
-        Task(uid="done", summary="Done task", due=None, priority=1, status="COMPLETED", task_index=2),
+        Task(uid="active", data=TaskData(summary="Active task", due=None, priority=1), task_index=1),
+        Task(uid="done", data=TaskData(summary="Done task", due=None, priority=1, status="COMPLETED"), task_index=2),
     ]
     exit_code, stdout = run_cli(["list"])
     assert exit_code == 0
@@ -261,8 +265,8 @@ def test_default_command_is_list() -> None:
 
 def test_filter_indices_default_to_list_command() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="Alpha", due=None, priority=1, task_index=1),
-        Task(uid="second", summary="Bravo", due=None, priority=2, task_index=2),
+        Task(uid="first", data=TaskData(summary="Alpha", due=None, priority=1), task_index=1),
+        Task(uid="second", data=TaskData(summary="Bravo", due=None, priority=2), task_index=2),
     ]
     exit_code, stdout = run_cli(["2"])
     assert exit_code == 0
@@ -272,8 +276,8 @@ def test_filter_indices_default_to_list_command() -> None:
 
 def test_modify_command_accepts_dash_prefixed_tokens() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="First", due=None, priority=1, task_index=1),
-        Task(uid="second", summary="Second", due=None, priority=2, task_index=2),
+        Task(uid="first", data=TaskData(summary="First", due=None, priority=1), task_index=1),
+        Task(uid="second", data=TaskData(summary="Second", due=None, priority=2), task_index=2),
     ]
     exit_code, stdout = run_cli(["1", "modify", "-bar", "summary:Updated"])
     assert exit_code == 0
@@ -283,7 +287,7 @@ def test_modify_command_accepts_dash_prefixed_tokens() -> None:
 
 def test_modify_command_removes_dash_prefixed_tag() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="First", due=None, priority=1, categories=["foo"], task_index=1),
+        Task(uid="first", data=TaskData(summary="First", due=None, priority=1, categories=["foo"]), task_index=1),
     ]
     exit_code, stdout = run_cli(["1", "modify", "-foo"])
     assert exit_code == 0
@@ -294,8 +298,8 @@ def test_modify_command_removes_dash_prefixed_tag() -> None:
 
 def test_modify_command_accepts_numeric_identifier() -> None:
     DummyClient.list_entries = [
-        Task(uid="first", summary="First", due=None, priority=1, task_index=1),
-        Task(uid="second", summary="Second", due=None, priority=2, task_index=2),
+        Task(uid="first", data=TaskData(summary="First", due=None, priority=1), task_index=1),
+        Task(uid="second", data=TaskData(summary="Second", due=None, priority=2), task_index=2),
     ]
     exit_code, stdout = run_cli(["1", "modify", "summary:Updated"])
     assert exit_code == 0

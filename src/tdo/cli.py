@@ -20,7 +20,7 @@ from .config import (
     load_config_from_path,
     write_config_file,
 )
-from .models import Task, TaskFilter, TaskPatch, TaskPayload
+from .models import Task, TaskData, TaskFilter, TaskPatch, TaskPayload
 from .time_parser import parse_due_value
 from .update_descriptor import UpdateDescriptor
 from .update_linear_parser import parse_update
@@ -101,6 +101,18 @@ def _parse_priority(raw: str) -> int | None:
         return value
     except ValueError:
         return None
+
+
+def _has_changes(patch: TaskData) -> bool:
+    return bool(
+        patch.summary
+        or patch.status
+        or patch.priority is not None
+        or patch.due is not None
+        or patch.wait is not None
+        or patch.x_properties
+        or patch.categories is not None
+    )
 
 
 def _truncate_summary(summary: str, max_len: int = 30) -> str:
@@ -197,7 +209,7 @@ def _build_patch_from_descriptor(
     raw_categories = x_properties.pop("CATEGORIES", None)
     metadata_categories = _split_categories_value(raw_categories)
     metadata_provided = raw_categories is not None
-    existing_categories = existing.categories if existing else None
+    existing_categories = existing.data.categories if existing else None
     base_categories = metadata_categories if metadata_provided else existing_categories
     tags_value = _apply_tag_changes(base_categories, descriptor)
     if tags_value is not None:
@@ -226,9 +238,9 @@ async def _sorted_tasks(client: "CalDAVClient") -> list[Task]:
 
 
 def _task_sort_key(task: Task) -> tuple[datetime, int, str]:
-    due_key = task.due or datetime.max
-    priority_key = task.priority if task.priority is not None else 10
-    summary_key = task.summary.strip().lower() if task.summary else ""
+    due_key = task.data.due or datetime.max
+    priority_key = task.data.priority if task.data.priority is not None else 10
+    summary_key = task.data.summary.strip().lower() if task.data.summary else ""
     return due_key, priority_key, summary_key
 
 
@@ -285,14 +297,14 @@ def _truncate_value(value: str, max_width: int, ellipsize: bool = False) -> str:
 
 
 def _format_project(task: Task) -> str:
-    project = task.x_properties.get("X-PROJECT") or task.x_properties.get("X-TASKS-ORG-ORDER")
+    project = task.data.x_properties.get("X-PROJECT") or task.data.x_properties.get("X-TASKS-ORG-ORDER")
     return project or "-"
 
 
 def _format_tag(task: Task) -> str:
-    if task.categories:
-        return ",".join(task.categories)
-    tag = task.x_properties.get("X-TAG") or task.x_properties.get("X-COLOR")
+    if task.data.categories:
+        return ",".join(task.data.categories)
+    tag = task.data.x_properties.get("X-TAG") or task.data.x_properties.get("X-COLOR")
     return tag or "-"
 
 
@@ -319,12 +331,12 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
     now = datetime.now()
     sorted_tasks = sorted(tasks, key=_task_sort_key)
     for task in sorted_tasks:
-        due_label = _format_due_label(task.due, now)
+        due_label = _format_due_label(task.data.due, now)
         project = _format_project(task)
         tag = _format_tag(task)
-        due_date = _format_due_date(task.due)
-        summary = task.summary or ""
-        priority_label = str(task.priority) if task.priority is not None else "-"
+        due_date = _format_due_date(task.data.due)
+        summary = task.data.summary or ""
+        priority_label = str(task.data.priority) if task.data.priority is not None else "-"
         # Use stable task_index for ID column
         id_label = str(task.task_index) if task.task_index is not None else "?"
         values: dict[str, str] = {
@@ -496,7 +508,7 @@ def _select_tasks_for_filter(tasks: list[Task], indices: list[str]) -> list[Task
 
 
 def _is_task_completed(task: Task) -> bool:
-    status = (task.status or "").strip().upper()
+    status = (task.data.status or "").strip().upper()
     return status in {"COMPLETED", "DONE"}
 
 
@@ -538,10 +550,10 @@ async def _handle_modify(args: argparse.Namespace) -> None:
         modified = 0
         for task in tasks:
             patch = _build_patch_from_descriptor(descriptor, task)
-            if not patch.has_changes():
+            if not _has_changes(patch):
                 continue
             await client.modify_task(task, patch)
-            truncated = _truncate_summary(task.summary)
+            truncated = _truncate_summary(task.data.summary or "")
             print(f"{task.uid} {truncated} was modified.")
             modified += 1
         if modified == 0:
@@ -580,7 +592,7 @@ async def _handle_delete(args: argparse.Namespace) -> None:
             _exit_with_message("no tasks match filter")
         for task in tasks:
             await client.delete_task(task.uid)
-            truncated = _truncate_summary(task.summary)
+            truncated = _truncate_summary(task.data.summary or "")
             print(f"{task.uid} {truncated} was deleted.")
     finally:
         await client.close()
@@ -614,22 +626,22 @@ async def _handle_list(args: argparse.Namespace) -> None:
 def _format_task_detail(task: Task) -> str:
     lines = []
     lines.append(f"ID:          {task.task_index or '?'}")
-    lines.append(f"Summary:     {task.summary}")
-    lines.append(f"Status:      {task.status}")
-    lines.append(f"Priority:    {task.priority if task.priority is not None else '-'}")
-    lines.append(f"Due:         {task.due.isoformat() if task.due else '-'}")
-    lines.append(f"Wait:        {task.wait.isoformat() if task.wait else '-'}")
+    lines.append(f"Summary:     {task.data.summary}")
+    lines.append(f"Status:      {task.data.status}")
+    lines.append(f"Priority:    {task.data.priority if task.data.priority is not None else '-'}")
+    lines.append(f"Due:         {task.data.due.isoformat() if task.data.due else '-'}")
+    lines.append(f"Wait:        {task.data.wait.isoformat() if task.data.wait else '-'}")
 
-    if task.categories:
-        lines.append(f"Tags:        {', '.join(task.categories)}")
+    if task.data.categories:
+        lines.append(f"Tags:        {', '.join(task.data.categories)}")
     else:
         lines.append("Tags:        -")
 
-    project = task.x_properties.get("X-PROJECT")
+    project = task.data.x_properties.get("X-PROJECT")
     if project:
         lines.append(f"Project:     {project}")
 
-    for key, value in task.x_properties.items():
+    for key, value in task.data.x_properties.items():
         if key != "X-PROJECT":
             lines.append(f"{key}: {value}")
 

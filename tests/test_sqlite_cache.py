@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tdo.models import Task
+from tdo.models import Task, TaskData
 from tdo.sqlite_cache import SqliteTaskCache
 
 
@@ -12,9 +12,9 @@ from tdo.sqlite_cache import SqliteTaskCache
 async def test_sqlite_cache_preserves_pending(tmp_path: Path) -> None:
     cache = await SqliteTaskCache.create(tmp_path / "cache.db")
     try:
-        pending = Task(uid="pending", summary="Pending")
+        pending = Task(uid="pending", data=TaskData(summary="Pending"))
         await cache.upsert_task(pending, pending_action="create")
-        remote = Task(uid="remote", summary="Remote")
+        remote = Task(uid="remote", data=TaskData(summary="Remote"))
         await cache.replace_remote_tasks([remote])
         tasks = await cache.list_tasks()
         assert {task.uid for task in tasks} == {"pending", "remote"}
