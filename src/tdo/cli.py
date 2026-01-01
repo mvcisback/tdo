@@ -20,6 +20,7 @@ from .config import (
     load_config_from_path,
     write_config_file,
 )
+from .diff import TaskDiff, TaskSetDiff
 from .models import Task, TaskData, TaskFilter, TaskPatch, TaskPayload
 from .time_parser import parse_due_value
 from .update_descriptor import UpdateDescriptor
@@ -527,7 +528,10 @@ async def _handle_add(args: argparse.Namespace) -> None:
     client = await _cache_client(args.env)
     try:
         created = await client.create_task(payload)
-        print(f"{created.uid} added as index {created.task_index}")
+        diff: TaskSetDiff[int] = TaskSetDiff(
+            diffs={created.task_index: TaskDiff(pre=None, post=created.data)}
+        )
+        print(diff.pretty())
     finally:
         await client.close()
 
@@ -545,17 +549,17 @@ async def _handle_modify(args: argparse.Namespace) -> None:
         )
         if not tasks:
             _exit_with_message("no tasks match filter")
-        modified = 0
+        diffs: dict[int, TaskDiff] = {}
         for task in tasks:
             patch = _build_patch_from_descriptor(descriptor, task)
             if not _has_changes(patch):
                 continue
-            await client.modify_task(task, patch)
-            truncated = _truncate_summary(task.data.summary or "")
-            print(f"{task.uid} {truncated} was modified.")
-            modified += 1
-        if modified == 0:
+            updated = await client.modify_task(task, patch)
+            diffs[task.task_index] = TaskDiff(pre=task.data, post=updated.data)
+        if not diffs:
             _exit_with_message("no changes provided")
+        result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+        print(result.pretty())
     finally:
         await client.close()
 
@@ -570,11 +574,12 @@ async def _handle_do(args: argparse.Namespace) -> None:
         )
         if not tasks:
             _exit_with_message("no tasks match filter")
-        completed: list[str] = []
+        diffs: dict[int, TaskDiff] = {}
         for task in tasks:
-            await client.modify_task(task, patch)
-            completed.append(task.uid)
-        print(f"marked {len(completed)} tasks as done")
+            updated = await client.modify_task(task, patch)
+            diffs[task.task_index] = TaskDiff(pre=task.data, post=updated.data)
+        result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+        print(result.pretty())
     finally:
         await client.close()
 
@@ -588,10 +593,12 @@ async def _handle_delete(args: argparse.Namespace) -> None:
         )
         if not tasks:
             _exit_with_message("no tasks match filter")
+        diffs: dict[int, TaskDiff] = {}
         for task in tasks:
             await client.delete_task(task.uid)
-            truncated = _truncate_summary(task.data.summary or "")
-            print(f"{task.uid} {truncated} was deleted.")
+            diffs[task.task_index] = TaskDiff(pre=task.data, post=None)
+        result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+        print(result.pretty())
     finally:
         await client.close()
 
@@ -668,13 +675,12 @@ async def _handle_show(args: argparse.Namespace) -> None:
 
 
 async def _handle_pull(args: argparse.Namespace) -> None:
-    config = _resolve_config(args.env)
-
     async def _pull(client: "CalDAVClient") -> None:
         result = await client.pull()
-        print(f"pulled {result.fetched} tasks")
-        if result.tasks:
-            _pretty_print_tasks(result.tasks, config.show_uids)
+        if result.diff.is_empty:
+            print(f"pulled {result.fetched} tasks (no changes)")
+        else:
+            print(result.diff.pretty())
 
     await _run_with_client(args.env, _pull)
 
@@ -682,9 +688,10 @@ async def _handle_pull(args: argparse.Namespace) -> None:
 async def _handle_push(args: argparse.Namespace) -> None:
     async def _push(client: "CalDAVClient") -> None:
         result = await client.push()
-        print(
-            f"pushed created={result.created} updated={result.updated} deleted={result.deleted}"
-        )
+        if result.diff.is_empty:
+            print("nothing to push")
+        else:
+            print(result.diff.pretty())
 
     await _run_with_client(args.env, _push)
 
@@ -692,11 +699,20 @@ async def _handle_push(args: argparse.Namespace) -> None:
 async def _handle_sync(args: argparse.Namespace) -> None:
     async def _sync(client: "CalDAVClient") -> None:
         result = await client.sync()
-        print(
-            "sync pulled="
-            f"{result.pulled.fetched} created={result.pushed.created}"
-            f" updated={result.pushed.updated} deleted={result.pushed.deleted}"
-        )
+        pull_empty = result.pulled.diff.is_empty
+        push_empty = result.pushed.diff.is_empty
+
+        if pull_empty and push_empty:
+            print("already in sync")
+        else:
+            if not pull_empty:
+                print("Pulled:")
+                print(result.pulled.diff.pretty())
+            if not push_empty:
+                if not pull_empty:
+                    print()
+                print("Pushed:")
+                print(result.pushed.diff.pretty())
 
     await _run_with_client(args.env, _sync)
 

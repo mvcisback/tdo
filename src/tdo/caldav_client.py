@@ -9,6 +9,7 @@ from typing import Dict, TYPE_CHECKING
 from uuid import uuid4
 
 from .config import CaldavConfig
+from .diff import TaskDiff, TaskSetDiff
 from .models import Task, TaskData, TaskPatch, TaskPayload
 from .sqlite_cache import DirtyTask, SqliteTaskCache
 
@@ -29,6 +30,7 @@ def _debug_log(stage: str, duration: float, info: str | None = None) -> None:
 @dataclass
 class PullResult:
     tasks: list[Task]
+    diff: TaskSetDiff[int]
 
     @property
     def fetched(self) -> int:
@@ -37,9 +39,19 @@ class PullResult:
 
 @dataclass
 class PushResult:
-    created: int = 0
-    updated: int = 0
-    deleted: int = 0
+    diff: TaskSetDiff[int]
+
+    @property
+    def created(self) -> int:
+        return self.diff.created_count
+
+    @property
+    def updated(self) -> int:
+        return self.diff.updated_count
+
+    @property
+    def deleted(self) -> int:
+        return self.diff.deleted_count
 
 
 @dataclass
@@ -199,48 +211,90 @@ class CalDAVClient:
 
     async def pull(self) -> PullResult:
         start = perf_counter()
+        cache = self._ensure_cache()
+
+        # Get cached state before pull
+        before = await cache.list_tasks()
+        before_by_uid = {t.uid: t for t in before}
+
+        # Fetch remote tasks
         calendar = self._ensure_calendar()
         resources = calendar.todos()
-        tasks = [self._task_from_resource(todo) for todo in resources]
-        await self._ensure_cache().replace_remote_tasks(tasks)
+        remote_tasks = [self._task_from_resource(todo) for todo in resources]
+
+        # Replace cache with remote tasks
+        await cache.replace_remote_tasks(remote_tasks)
+
+        # Get cached state after pull (with assigned indices)
+        after = await cache.list_tasks()
+        after_by_uid = {t.uid: t for t in after}
+
+        # Build diff keyed by task_index
+        diffs: dict[int, TaskDiff] = {}
+        all_uids = set(before_by_uid.keys()) | set(after_by_uid.keys())
+
+        for uid in all_uids:
+            before_task = before_by_uid.get(uid)
+            after_task = after_by_uid.get(uid)
+
+            pre = before_task.data if before_task else None
+            post = after_task.data if after_task else None
+
+            if pre == post:
+                continue
+
+            # Use after's index for creates/updates, before's index for deletes
+            if after_task is not None:
+                key = after_task.task_index
+            else:
+                key = before_task.task_index
+
+            diffs[key] = TaskDiff(pre=pre, post=post)
+
+        diff: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+
         elapsed = perf_counter() - start
-        _debug_log("pull", elapsed, f"count={len(tasks)}")
-        return PullResult(tasks=tasks)
+        _debug_log("pull", elapsed, f"count={len(remote_tasks)}")
+        return PullResult(tasks=after, diff=diff)
 
     async def push(self) -> PushResult:
         start = perf_counter()
         cache = self._ensure_cache()
         pending = await cache.dirty_tasks()
-        created = 0
-        updated = 0
-        deleted = 0
+        diffs: dict[int, TaskDiff] = {}
+
         if pending:
             calendar = self._ensure_calendar()
             for entry in pending:
+                task = entry.task
+                index = task.task_index
+
                 if entry.action == "create":
-                    created += 1
-                    synced = self._push_create(entry.task, calendar)
+                    synced = self._push_create(task, calendar)
                     await cache.upsert_task(
                         synced,
                         last_synced=time.time(),
                         clear_pending=True,
                     )
-                    continue
-                if entry.action == "update":
-                    updated += 1
-                    synced = self._push_update(entry.task, calendar)
+                    diffs[index] = TaskDiff(pre=None, post=task.data)
+                elif entry.action == "update":
+                    synced = self._push_update(task, calendar)
                     await cache.upsert_task(
                         synced,
                         last_synced=time.time(),
                         clear_pending=True,
                     )
-                    continue
-                deleted += 1
-                self._push_delete(entry.task, calendar)
-                await cache.delete_task(entry.task.uid)
+                    # Use empty TaskData as synthetic pre to trigger is_update
+                    diffs[index] = TaskDiff(pre=TaskData(), post=task.data)
+                else:  # delete
+                    self._push_delete(task, calendar)
+                    await cache.delete_task(task.uid)
+                    diffs[index] = TaskDiff(pre=task.data, post=None)
+
+        diff: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
         elapsed = perf_counter() - start
         _debug_log("push", elapsed, f"pending={len(pending)}")
-        return PushResult(created=created, updated=updated, deleted=deleted)
+        return PushResult(diff=diff)
 
     async def sync(self) -> SyncResult:
         pulled = await self.pull()

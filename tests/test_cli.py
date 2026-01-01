@@ -144,7 +144,7 @@ def stub_cal_dav(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_add_command_parses_tokens() -> None:
     exit_code, stdout = run_cli(["add", "Create", "pri:H", "x:X-TEST:value"])
     assert exit_code == 0
-    assert "dummy-task" in stdout
+    assert "Created (1):" in stdout
     assert DummyClient.last_payload is not None
     assert DummyClient.last_payload.priority == 1
     assert DummyClient.last_payload.x_properties == {"X-TEST": "value"}
@@ -209,7 +209,7 @@ def test_modify_command_accepts_summary_patch() -> None:
 def test_modify_command_adds_tag_without_other_changes() -> None:
     exit_code, stdout = run_cli(["1", "modify", "+foo2"])
     assert exit_code == 0
-    assert "was modified." in stdout
+    assert "Updated (1):" in stdout
     assert DummyClient.last_patch is not None
     assert DummyClient.last_patch.categories == ["foo2"]
 
@@ -222,8 +222,9 @@ def test_delete_command_accepts_filter_indices() -> None:
     ]
     exit_code, stdout = run_cli(["1,3", "del"])
     assert exit_code == 0
-    assert "first Alpha was deleted." in stdout
-    assert "third Charlie was deleted." in stdout
+    assert "Deleted (2):" in stdout
+    assert "[1] Alpha" in stdout
+    assert "[3] Charlie" in stdout
     assert DummyClient.deleted == ["first", "third"]
 
 
@@ -291,7 +292,8 @@ def test_modify_command_removes_dash_prefixed_tag() -> None:
     ]
     exit_code, stdout = run_cli(["1", "modify", "-foo"])
     assert exit_code == 0
-    assert "first First was modified." in stdout
+    assert "Updated (1):" in stdout
+    assert "[1] First" in stdout
     assert DummyClient.last_patch is not None
     assert DummyClient.last_patch.categories == []
 
