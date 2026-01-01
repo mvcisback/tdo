@@ -2,15 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Generic, Optional, TypeVar
+
+
+T = TypeVar("T")
 
 
 @dataclass
-class TaskData:
+class TaskData(Generic[T]):
     summary: str | None = None
     status: str | None = None
-    due: Optional[datetime] = None
-    wait: Optional[datetime] = None
+    due: T | None = None
+    wait: T | None = None
     priority: Optional[int] = None
     x_properties: Dict[str, str] = field(default_factory=dict)
     categories: list[str] | None = None
@@ -19,13 +22,13 @@ class TaskData:
 @dataclass
 class Task:
     uid: str
-    data: TaskData
+    data: TaskData[datetime]
     href: str | None = None
     task_index: int | None = None
 
 
-TaskPayload = TaskData
-TaskPatch = TaskData
+TaskPayload = TaskData[datetime]
+TaskPatch = TaskData[datetime]
 
 
 @dataclass

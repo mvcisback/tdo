@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .models import TaskData
 from .update_descriptor import UpdateDescriptor
 
 __all__ = ["parse_update"]
@@ -27,7 +28,6 @@ def parse_update(raw: str) -> UpdateDescriptor:
     description_parts: list[str] = []
     additions: list[str] = []
     removals: list[str] = []
-    project: str | None = None
     due: str | None = None
     wait: str | None = None
     priority: int | None = None
@@ -43,15 +43,15 @@ def parse_update(raw: str) -> UpdateDescriptor:
         if token.startswith("-") and len(token) > 1:
             removals.append(token[1:])
             continue
-        
+
         # Key-value metadata
         if ":" in token:
             key, rest = token.split(":", 1)
             key_lower = key.strip().lower()
             value = rest.strip()
-            
+
             if key_lower == "project":
-                project = value  # Keep empty string to signal "unset"
+                x_properties["X-PROJECT"] = value  # Empty string signals "unset"
                 continue
             if key_lower == "due":
                 due = value  # Keep empty string to signal "unset"
@@ -77,7 +77,7 @@ def parse_update(raw: str) -> UpdateDescriptor:
                 prop_key, prop_value = rest.split(":", 1)
                 x_properties[prop_key] = prop_value
                 continue
-        
+
         # Description word
         description_parts.append(token)
 
@@ -88,16 +88,21 @@ def parse_update(raw: str) -> UpdateDescriptor:
     removal_set -= collision
 
     description = " ".join(part for part in description_parts if part.strip())
+    # Use summary if explicitly set, otherwise use description
+    final_summary = summary if summary is not None else (description if description else None)
 
-    return UpdateDescriptor(
-        description=description,
-        add_tags=frozenset(addition_set),
-        remove_tags=frozenset(removal_set),
-        project=project,
+    add_data: TaskData[str] = TaskData(
+        summary=final_summary,
+        status=status,
         due=due,
         wait=wait,
         priority=priority,
-        status=status,
-        summary=summary,
         x_properties=x_properties,
+        categories=list(addition_set) if addition_set else None,
     )
+
+    remove_data: TaskData[str] = TaskData(
+        categories=list(removal_set) if removal_set else None,
+    )
+
+    return UpdateDescriptor(add_data=add_data, remove_data=remove_data)

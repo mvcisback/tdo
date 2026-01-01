@@ -136,35 +136,39 @@ def _resolve_due_value(raw: str | None) -> datetime | None:
 
 
 def _apply_tag_changes(existing: Sequence[str] | None, descriptor: UpdateDescriptor) -> list[str] | None:
-    if not descriptor.add_tags and not descriptor.remove_tags:
+    add_tags = descriptor.add_data.categories or []
+    remove_tags = descriptor.remove_data.categories or []
+    if not add_tags and not remove_tags:
         return None
     normalized = {tag.strip() for tag in existing or [] if tag.strip()}
-    additions = {tag.strip() for tag in descriptor.add_tags if tag.strip()}
-    removals = {tag.strip() for tag in descriptor.remove_tags if tag.strip()}
+    additions = {tag.strip() for tag in add_tags if tag.strip()}
+    removals = {tag.strip() for tag in remove_tags if tag.strip()}
     normalized.update(additions)
     normalized.difference_update(removals)
     return sorted(normalized)
 
 
 def _has_update_candidates(descriptor: UpdateDescriptor) -> bool:
+    add = descriptor.add_data
+    remove = descriptor.remove_data
     return bool(
-        descriptor.summary
-        or descriptor.priority is not None
-        or descriptor.status
-        or descriptor.x_properties
-        or descriptor.project is not None  # Empty string means "unset"
-        or descriptor.due is not None  # Empty string means "unset"
-        or descriptor.wait is not None  # Empty string means "unset"
-        or descriptor.add_tags
-        or descriptor.remove_tags
+        add.summary
+        or add.priority is not None
+        or add.status
+        or add.x_properties
+        or add.due is not None  # Empty string means "unset"
+        or add.wait is not None  # Empty string means "unset"
+        or add.categories
+        or remove.categories
     )
 
 
 def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
-    summary = descriptor.summary or descriptor.description
-    due = _resolve_due_value(descriptor.due)
-    wait = _resolve_due_value(descriptor.wait)
-    x_properties = dict(descriptor.x_properties)
+    add = descriptor.add_data
+    summary = add.summary
+    due = _resolve_due_value(add.due)
+    wait = _resolve_due_value(add.wait)
+    x_properties = dict(add.x_properties)
     raw_categories = x_properties.pop("CATEGORIES", None)
     metadata_categories = _split_categories_value(raw_categories)
     base_categories = metadata_categories if raw_categories is not None else None
@@ -173,14 +177,12 @@ def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
         categories = tags_value
     else:
         categories = base_categories
-    if descriptor.project:
-        x_properties["X-PROJECT"] = descriptor.project
     return TaskPayload(
         summary=summary,
-        priority=descriptor.priority,
+        priority=add.priority,
         due=due,
         wait=wait,
-        status=descriptor.status or "IN-PROCESS",
+        status=add.status or "IN-PROCESS",
         x_properties=x_properties,
         categories=categories if categories else None,
     )
@@ -189,23 +191,24 @@ def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
 def _build_patch_from_descriptor(
     descriptor: UpdateDescriptor, existing: Task | None
 ) -> TaskPatch:
+    add = descriptor.add_data
     # Handle empty string as "unset" using sentinel datetime
-    if descriptor.due == "":
+    if add.due == "":
         due = _UNSET_DATETIME
     else:
-        due = _resolve_due_value(descriptor.due)
-    if descriptor.wait == "":
+        due = _resolve_due_value(add.due)
+    if add.wait == "":
         wait = _UNSET_DATETIME
     else:
-        wait = _resolve_due_value(descriptor.wait)
+        wait = _resolve_due_value(add.wait)
     patch = TaskPatch(
-        summary=descriptor.summary,
-        priority=descriptor.priority,  # 0 signals unset
+        summary=add.summary,
+        priority=add.priority,  # 0 signals unset
         due=due,
         wait=wait,
-        status=descriptor.status,
+        status=add.status,
     )
-    x_properties = dict(descriptor.x_properties)
+    x_properties = dict(add.x_properties)
     raw_categories = x_properties.pop("CATEGORIES", None)
     metadata_categories = _split_categories_value(raw_categories)
     metadata_provided = raw_categories is not None
@@ -216,11 +219,6 @@ def _build_patch_from_descriptor(
         patch.categories = tags_value
     elif metadata_provided:
         patch.categories = metadata_categories
-    if descriptor.project is not None:
-        if descriptor.project:
-            x_properties["X-PROJECT"] = descriptor.project
-        else:
-            x_properties["X-PROJECT"] = ""  # Empty = remove
     patch.x_properties = x_properties
     return patch
 

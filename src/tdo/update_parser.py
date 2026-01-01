@@ -3,6 +3,7 @@ from __future__ import annotations
 from parsimonious.grammar import Grammar
 from parsimonious.nodes import NodeVisitor
 
+from .models import TaskData
 from .update_descriptor import UpdateDescriptor
 
 
@@ -49,7 +50,6 @@ class _UpdateVisitor(NodeVisitor):
         self._description_parts: list[str] = []
         self._additions: list[str] = []
         self._removals: list[str] = []
-        self.project: str | None = None
         self.due: str | None = None
         self.wait: str | None = None
         self.priority: int | None = None
@@ -73,9 +73,9 @@ class _UpdateVisitor(NodeVisitor):
         key, _, value = visited_children
         if key and isinstance(key, str):
             key_lower = key.lower()
-            
+
             if key_lower == "project":
-                self.project = value  # Keep empty string to signal "unset"
+                self.x_properties["X-PROJECT"] = value  # Empty string signals "unset"
             elif key_lower == "due":
                 self.due = value  # Keep empty string to signal "unset"
             elif key_lower == "wait":
@@ -116,21 +116,26 @@ class _UpdateVisitor(NodeVisitor):
         if collision:
             additions -= collision
             removals -= collision
-        
+
         description = " ".join(part for part in self._description_parts if part.strip())
-        
-        return UpdateDescriptor(
-            description=description,
-            add_tags=frozenset(additions),
-            remove_tags=frozenset(removals),
-            project=self.project,
+        # Use summary if explicitly set, otherwise use description
+        final_summary = self.summary if self.summary is not None else (description if description else None)
+
+        add_data: TaskData[str] = TaskData(
+            summary=final_summary,
+            status=self.status,
             due=self.due,
             wait=self.wait,
             priority=self.priority,
-            status=self.status,
-            summary=self.summary,
             x_properties=self.x_properties,
+            categories=list(additions) if additions else None,
         )
+
+        remove_data: TaskData[str] = TaskData(
+            categories=list(removals) if removals else None,
+        )
+
+        return UpdateDescriptor(add_data=add_data, remove_data=remove_data)
 
     def generic_visit(self, node, visited_children):
         return visited_children or node.text
