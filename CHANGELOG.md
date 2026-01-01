@@ -1,3 +1,15 @@
+## 0.7.0 (2025-12-31)
+
+### Feat
+
+- **cli**: Display structured change summaries for all commands
+
+### Refactor
+
+- Add compositional TaskDiff and TaskSetDiff for sync operations
+- Make TaskData generic over time field types
+- **models**: Use composition for Task with nested TaskData
+
 ## 0.6.0 (2025-12-31)
 
 ### Feat
