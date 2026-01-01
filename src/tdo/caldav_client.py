@@ -11,7 +11,7 @@ from uuid import uuid4
 from .config import CaldavConfig
 from .diff import TaskDiff, TaskSetDiff
 from .models import Task, TaskData, TaskPatch, TaskPayload
-from .sqlite_cache import DirtyTask, SqliteTaskCache
+from .sqlite_cache import SqliteTaskCache
 
 if TYPE_CHECKING:
     from caldav import DAVClient, Calendar
@@ -122,7 +122,6 @@ class CalDAVClient:
         return await self._ensure_cache().list_tasks()
 
     async def list_tasks_filtered(self, task_filter: "TaskFilter | None" = None) -> list[Task]:
-        from .models import TaskFilter
         return await self._ensure_cache().list_tasks_filtered(task_filter)
 
     async def create_task(self, payload: TaskPayload) -> Task:

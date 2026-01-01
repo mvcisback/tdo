@@ -96,7 +96,6 @@ class DummyClient:
         return list(DummyClient.list_entries)
 
     async def list_tasks_filtered(self, task_filter: "TaskFilter | None" = None) -> list[Task]:
-        from tdo.models import TaskFilter
         tasks = list(DummyClient.list_entries)
         if not task_filter:
             return tasks
