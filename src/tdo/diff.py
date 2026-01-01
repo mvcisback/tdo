@@ -217,8 +217,18 @@ class TaskSetDiff(Generic[K]):
             elif diff.is_create and diff.post is not None:
                 post = diff.post
                 sql = """
-                    INSERT INTO tasks (uid, summary, status, due, wait, priority, x_properties, categories, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO tasks (uid, summary, status, due, wait, priority, x_properties, categories, updated_at, deleted)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    ON CONFLICT(uid) DO UPDATE SET
+                        summary = excluded.summary,
+                        status = excluded.status,
+                        due = excluded.due,
+                        wait = excluded.wait,
+                        priority = excluded.priority,
+                        x_properties = excluded.x_properties,
+                        categories = excluded.categories,
+                        updated_at = excluded.updated_at,
+                        deleted = 0
                 """
                 params = (
                     uid,

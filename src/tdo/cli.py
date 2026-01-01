@@ -370,7 +370,7 @@ def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
     console.print(table)
 
 
-_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "show", "sync"}
+_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "show", "sync", "undo"}
 
 
 def _looks_like_index_filter(value: str) -> bool:
@@ -759,6 +759,33 @@ async def _handle_sync(args: argparse.Namespace) -> None:
     await _run_with_client(args.env, _sync)
 
 
+async def _handle_undo(args: argparse.Namespace) -> None:
+    client = await _cache_client(args.env)
+    try:
+        cache = client._ensure_cache()
+
+        # Pop newest entry
+        entry = await cache.pop_transaction()
+        if entry is None:
+            _exit_with_message("no transactions to undo")
+
+        # Deserialize and invert the diff
+        original_diff = TaskSetDiff.from_json(entry.diff_json)
+        inverse_diff = original_diff.inv()
+
+        # Apply inverse to database
+        sql_statements = inverse_diff.as_sql()
+        for sql, params in sql_statements:
+            await cache._conn.execute(sql, params)
+        await cache._conn.commit()
+
+        # Display what was undone
+        print(f"Undid {entry.operation or 'operation'}:")
+        print(inverse_diff.pretty())
+    finally:
+        await client.close()
+
+
 def _handle_config_init(args: argparse.Namespace) -> None:
     target = config_file_path(args.env, args.config_home)
     calendar_url_value = _require_value(args.calendar_url, "CalDAV calendar URL")
@@ -824,6 +851,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     show_parser = subparsers.add_parser("show")
     show_parser.set_defaults(func=_handle_show)
+
+    undo_parser = subparsers.add_parser("undo")
+    undo_parser.set_defaults(func=_handle_undo)
 
     config_parser = subparsers.add_parser("config")
     config_parser.set_defaults(func=_handle_config_help, parser=config_parser)

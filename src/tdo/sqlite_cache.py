@@ -542,3 +542,33 @@ class SqliteTaskCache:
         await self._conn.commit()
 
         return count
+
+    async def pop_transaction(self) -> TransactionLogEntry | None:
+        """Pop the newest transaction log entry.
+
+        Returns the entry and deletes it from the log.
+        Returns None if the log is empty.
+        """
+        assert self._conn is not None
+
+        # Get the newest entry
+        async with self._conn.execute(
+            "SELECT id, diff_json, operation, created_at FROM transaction_log ORDER BY id DESC LIMIT 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None:
+            return None
+
+        entry = TransactionLogEntry(
+            id=row[0],
+            diff_json=row[1],
+            operation=row[2],
+            created_at=row[3],
+        )
+
+        # Delete the entry
+        await self._conn.execute("DELETE FROM transaction_log WHERE id = ?", (entry.id,))
+        await self._conn.commit()
+
+        return entry
