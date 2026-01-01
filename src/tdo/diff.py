@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Callable, Generic, Mapping, Sequence, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Generic, Mapping, Sequence, TypeVar
 
 from .models import Task, TaskData
 
@@ -74,6 +75,23 @@ class TaskDiff:
     def is_noop(self) -> bool:
         """True if this diff represents no change."""
         return self.pre == self.post
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize TaskDiff to a JSON-compatible dict."""
+        return {
+            "pre": self.pre.to_dict() if self.pre else None,
+            "post": self.post.to_dict() if self.post else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TaskDiff:
+        """Deserialize TaskDiff from a dict."""
+        pre_data = data.get("pre")
+        post_data = data.get("post")
+        return cls(
+            pre=TaskData.from_dict(pre_data) if pre_data else None,
+            post=TaskData.from_dict(post_data) if post_data else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -346,16 +364,30 @@ class TaskSetDiff(Generic[K]):
         """True if there are no changes."""
         return all(d.is_noop for d in self.diffs.values())
 
+    def to_json(self) -> str:
+        """Serialize TaskSetDiff to JSON string.
+
+        Keys are converted to strings for JSON compatibility.
+        """
+        payload = {str(k): v.to_dict() for k, v in self.diffs.items()}
+        return json.dumps(payload)
+
+    @classmethod
+    def from_json(cls, data: str) -> TaskSetDiff[str]:
+        """Deserialize TaskSetDiff from JSON string.
+
+        Returns a str-keyed TaskSetDiff since JSON keys are always strings.
+        """
+        payload = json.loads(data)
+        diffs = {k: TaskDiff.from_dict(v) for k, v in payload.items()}
+        return cls(diffs=diffs)
+
 
 def _serialize_map(value: dict[str, str] | None) -> str:
     """Serialize a dict to JSON string."""
-    import json
-
     return json.dumps(value or {})
 
 
 def _serialize_list(value: list[str] | None) -> str:
     """Serialize a list to JSON string."""
-    import json
-
     return json.dumps(list(value or []))

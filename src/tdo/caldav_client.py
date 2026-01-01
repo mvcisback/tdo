@@ -252,6 +252,18 @@ class CalDAVClient:
 
         diff: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
 
+        # Log transaction if there are changes
+        if not diff.is_empty:
+            # Build resolver from index to uid
+            index_to_uid = {t.task_index: t.uid for t in after}
+            index_to_uid.update({t.task_index: t.uid for t in before})
+            uid_diff = diff.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+            await cache.log_transaction(
+                uid_diff,
+                operation="pull",
+                max_entries=self.config.cache.transaction_log_size,
+            )
+
         elapsed = perf_counter() - start
         _debug_log("pull", elapsed, f"count={len(remote_tasks)}")
         return PullResult(tasks=after, diff=diff)
@@ -291,6 +303,18 @@ class CalDAVClient:
                     diffs[index] = TaskDiff(pre=task.data, post=None)
 
         diff: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+
+        # Log transaction if there are changes
+        if not diff.is_empty:
+            # Build resolver from index to uid
+            index_to_uid = {entry.task.task_index: entry.task.uid for entry in pending}
+            uid_diff = diff.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+            await cache.log_transaction(
+                uid_diff,
+                operation="push",
+                max_entries=self.config.cache.transaction_log_size,
+            )
+
         elapsed = perf_counter() - start
         _debug_log("push", elapsed, f"pending={len(pending)}")
         return PushResult(diff=diff)

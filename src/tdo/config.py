@@ -4,11 +4,18 @@ import getpass
 import json
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Tuple, Union
 
 import keyring
+
+DEFAULT_TRANSACTION_LOG_SIZE = 32
+
+
+@dataclass
+class CacheConfig:
+    transaction_log_size: int = DEFAULT_TRANSACTION_LOG_SIZE
 
 
 @dataclass
@@ -19,6 +26,7 @@ class CaldavConfig:
     token: str | None = None
     env: str = "default"
     show_uids: bool = False
+    cache: CacheConfig = field(default_factory=CacheConfig)
 
     @property
     def keyring_service(self) -> str:
@@ -61,6 +69,13 @@ def write_config_file(path: Path, config: CaldavConfig, *, force: bool = False) 
         lines.append(f"token = {json.dumps(config.token)}")
     if config.env:
         lines.append(f"env = {json.dumps(config.env)}")
+
+    # Write cache section if non-default
+    if config.cache.transaction_log_size != DEFAULT_TRANSACTION_LOG_SIZE:
+        lines.append("")
+        lines.append("[cache]")
+        lines.append(f"transaction_log_size = {config.cache.transaction_log_size}")
+
     path.write_text("\n".join(lines) + "\n")
     return path
 
@@ -76,20 +91,30 @@ def _parse_config_file(path: Path) -> Iterable[Tuple[str, str]]:
         yield key.strip().lower(), value.strip()
 
 
-def _parse_toml_file(path: Path) -> dict[str, Union[str, bool]]:
+def _parse_toml_file(path: Path) -> dict[str, Union[str, bool, int]]:
     data = tomllib.loads(path.read_text())
-    section = data.get("caldav")
-    if not isinstance(section, dict):
-        return {}
-    result: dict[str, Union[str, bool]] = {}
-    for key, value in section.items():
-        if value is None:
-            continue
-        result[key.lower()] = value
+    result: dict[str, Union[str, bool, int]] = {}
+
+    # Parse [caldav] section
+    caldav_section = data.get("caldav")
+    if isinstance(caldav_section, dict):
+        for key, value in caldav_section.items():
+            if value is None:
+                continue
+            result[key.lower()] = value
+
+    # Parse [cache] section
+    cache_section = data.get("cache")
+    if isinstance(cache_section, dict):
+        for key, value in cache_section.items():
+            if value is None:
+                continue
+            result[f"cache.{key.lower()}"] = value
+
     return result
 
 
-def _load_file_values(path: Path) -> dict[str, Union[str, bool]]:
+def _load_file_values(path: Path) -> dict[str, Union[str, bool, int]]:
     if path.suffix == ".toml":
         return _parse_toml_file(path)
     return dict(_parse_config_file(path))
@@ -119,14 +144,27 @@ def _parse_bool_like(value: str | bool | None) -> bool | None:
     return None
 
 
+def _parse_int_like(value: str | int | None, default: int) -> int:
+    """Parse an integer value with fallback to default."""
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return default
+
+
 def load_config(env: str | None = None, config_home: Path | None = None) -> CaldavConfig:
     resolved_env = resolve_env(env)
-    values = {
+    values: dict[str, str | bool | int | None] = {
         "calendar_url": os.environ.get("TDO_CALDAV_URL"),
         "username": os.environ.get("TDO_USERNAME"),
         "password": os.environ.get("TDO_PASSWORD"),
         "token": os.environ.get("TDO_TOKEN"),
         "show_uids": os.environ.get("TDO_SHOW_UIDS"),
+        "cache.transaction_log_size": os.environ.get("TDO_TRANSACTION_LOG_SIZE"),
     }
 
     path = config_file_path(resolved_env, config_home)
@@ -148,12 +186,21 @@ def load_config_from_path(path: Path, env: str | None = None) -> CaldavConfig:
     return _build_config(values, resolved_env)
 
 
-def _build_config(values: dict[str, str | bool | None], resolved_env: str) -> CaldavConfig:
+def _build_config(
+    values: dict[str, str | bool | int | None], resolved_env: str
+) -> CaldavConfig:
     url = values.get("calendar_url")
     username = values.get("username")
     password = values.get("password")
     token = values.get("token")
     show_uids = _parse_bool_like(values.get("show_uids"))
+
+    # Build cache config
+    transaction_log_size = _parse_int_like(
+        values.get("cache.transaction_log_size"), DEFAULT_TRANSACTION_LOG_SIZE
+    )
+    cache_config = CacheConfig(transaction_log_size=transaction_log_size)
+
     if not url or not username:
         raise RuntimeError("caldav configuration requires calendar_url and username")
 
@@ -164,4 +211,5 @@ def _build_config(values: dict[str, str | bool | None], resolved_env: str) -> Ca
         token=token,
         env=resolved_env,
         show_uids=show_uids if show_uids is not None else False,
+        cache=cache_config,
     )

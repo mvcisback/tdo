@@ -6,11 +6,14 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import aiosqlite
 
 from .models import Task, TaskData, TaskFilter
+
+if TYPE_CHECKING:
+    from .diff import TaskSetDiff
 
 
 @dataclass
@@ -18,6 +21,14 @@ class DirtyTask:
     task: Task
     action: str
     deleted: bool
+
+
+@dataclass
+class TransactionLogEntry:
+    id: int
+    diff_json: str
+    operation: str | None
+    created_at: float
 
 
 def _serialize_properties(value: Sequence[str] | None) -> str:
@@ -121,6 +132,14 @@ class SqliteTaskCache:
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_dirty ON tasks(pending_action);
         CREATE INDEX IF NOT EXISTS idx_tasks_index ON tasks(task_index);
+
+        CREATE TABLE IF NOT EXISTS transaction_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            diff_json TEXT NOT NULL,
+            operation TEXT,
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_transaction_log_created ON transaction_log(created_at);
         """
         assert self._conn is not None
         await self._conn.executescript(script)
@@ -429,3 +448,97 @@ class SqliteTaskCache:
             href=row["href"],
             task_index=row["task_index"],
         )
+
+    async def log_transaction(
+        self,
+        diff: "TaskSetDiff[str]",
+        *,
+        operation: str | None = None,
+        max_entries: int = 32,
+    ) -> None:
+        """Record a TaskSetDiff to the transaction log.
+
+        Maintains a FIFO queue of max_entries. Oldest entries are dropped
+        when the limit is exceeded.
+
+        Args:
+            diff: The diff to record (must be uid-keyed)
+            operation: Optional operation type (e.g., "pull", "push", "add")
+            max_entries: Maximum log entries to retain
+        """
+        assert self._conn is not None
+
+        diff_json = diff.to_json()
+        now = time.time()
+
+        # Insert new entry
+        await self._conn.execute(
+            """
+            INSERT INTO transaction_log (diff_json, operation, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (diff_json, operation, now),
+        )
+
+        # Prune oldest entries beyond max_entries
+        await self._conn.execute(
+            """
+            DELETE FROM transaction_log
+            WHERE id NOT IN (
+                SELECT id FROM transaction_log
+                ORDER BY id DESC
+                LIMIT ?
+            )
+            """,
+            (max_entries,),
+        )
+
+        await self._conn.commit()
+
+    async def get_transaction_log(
+        self,
+        limit: int | None = None,
+    ) -> list[TransactionLogEntry]:
+        """Retrieve transaction log entries.
+
+        Args:
+            limit: Maximum entries to return (None for all)
+
+        Returns:
+            List of TransactionLogEntry, ordered by newest first.
+        """
+        assert self._conn is not None
+
+        query = "SELECT id, diff_json, operation, created_at FROM transaction_log ORDER BY id DESC"
+        if limit:
+            query += f" LIMIT {limit}"
+
+        async with self._conn.execute(query) as cursor:
+            rows = await cursor.fetchall()
+
+        return [
+            TransactionLogEntry(
+                id=row[0],
+                diff_json=row[1],
+                operation=row[2],
+                created_at=row[3],
+            )
+            for row in rows
+        ]
+
+    async def clear_transaction_log(self) -> int:
+        """Clear all transaction log entries.
+
+        Returns:
+            Number of entries deleted.
+        """
+        assert self._conn is not None
+
+        async with self._conn.execute("SELECT COUNT(*) FROM transaction_log") as cursor:
+            row = await cursor.fetchone()
+            count = row[0] if row else 0
+
+        await self._conn.execute("DELETE FROM transaction_log")
+        await self._conn.commit()
+
+        return count

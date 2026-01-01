@@ -532,6 +532,15 @@ async def _handle_add(args: argparse.Namespace) -> None:
             diffs={created.task_index: TaskDiff(pre=None, post=created.data)}
         )
         print(diff.pretty())
+
+        # Log transaction
+        if not diff.is_empty and client.cache:
+            uid_diff = diff.to_uid_keyed(lambda idx: created.uid if idx == created.task_index else str(idx))
+            await client.cache.log_transaction(
+                uid_diff,
+                operation="add",
+                max_entries=client.config.cache.transaction_log_size,
+            )
     finally:
         await client.close()
 
@@ -550,16 +559,27 @@ async def _handle_modify(args: argparse.Namespace) -> None:
         if not tasks:
             _exit_with_message("no tasks match filter")
         diffs: dict[int, TaskDiff] = {}
+        index_to_uid: dict[int, str] = {}
         for task in tasks:
             patch = _build_patch_from_descriptor(descriptor, task)
             if not _has_changes(patch):
                 continue
             updated = await client.modify_task(task, patch)
             diffs[task.task_index] = TaskDiff(pre=task.data, post=updated.data)
+            index_to_uid[task.task_index] = task.uid
         if not diffs:
             _exit_with_message("no changes provided")
         result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
         print(result.pretty())
+
+        # Log transaction
+        if not result.is_empty and client.cache:
+            uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+            await client.cache.log_transaction(
+                uid_diff,
+                operation="modify",
+                max_entries=client.config.cache.transaction_log_size,
+            )
     finally:
         await client.close()
 
@@ -575,11 +595,22 @@ async def _handle_do(args: argparse.Namespace) -> None:
         if not tasks:
             _exit_with_message("no tasks match filter")
         diffs: dict[int, TaskDiff] = {}
+        index_to_uid: dict[int, str] = {}
         for task in tasks:
             updated = await client.modify_task(task, patch)
             diffs[task.task_index] = TaskDiff(pre=task.data, post=updated.data)
+            index_to_uid[task.task_index] = task.uid
         result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
         print(result.pretty())
+
+        # Log transaction
+        if not result.is_empty and client.cache:
+            uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+            await client.cache.log_transaction(
+                uid_diff,
+                operation="do",
+                max_entries=client.config.cache.transaction_log_size,
+            )
     finally:
         await client.close()
 
@@ -594,11 +625,22 @@ async def _handle_delete(args: argparse.Namespace) -> None:
         if not tasks:
             _exit_with_message("no tasks match filter")
         diffs: dict[int, TaskDiff] = {}
+        index_to_uid: dict[int, str] = {}
         for task in tasks:
             await client.delete_task(task.uid)
             diffs[task.task_index] = TaskDiff(pre=task.data, post=None)
+            index_to_uid[task.task_index] = task.uid
         result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
         print(result.pretty())
+
+        # Log transaction
+        if not result.is_empty and client.cache:
+            uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+            await client.cache.log_transaction(
+                uid_diff,
+                operation="delete",
+                max_entries=client.config.cache.transaction_log_size,
+            )
     finally:
         await client.close()
 
