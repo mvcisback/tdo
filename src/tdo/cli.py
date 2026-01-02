@@ -374,7 +374,7 @@ def _pretty_print_tasks(
     console.print(table)
 
 
-_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "show", "sync", "undo"}
+_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "show", "start", "stop", "sync", "undo"}
 
 
 def _looks_like_index_filter(value: str) -> bool:
@@ -627,6 +627,48 @@ async def _handle_do(args: argparse.Namespace) -> None:
             )
     finally:
         await client.close()
+
+
+async def _change_status(args: argparse.Namespace, status: str, operation: str) -> None:
+    """Change task status and log the transaction."""
+    patch = TaskPatch(status=status)
+    client = await _cache_client(args.env)
+    try:
+        tasks = _select_tasks_for_filter(
+            await _sorted_tasks(client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            _exit_with_message("no tasks match filter")
+        diffs: dict[int, TaskDiff] = {}
+        index_to_uid: dict[int, str] = {}
+        for task in tasks:
+            updated = await client.modify_task(task, patch)
+            diffs[task.task_index] = TaskDiff(pre=task.data, post=updated.data)
+            index_to_uid[task.task_index] = task.uid
+        result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+        print(result.pretty())
+
+        # Log transaction
+        if not result.is_empty and client.cache:
+            uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+            await client.cache.log_transaction(
+                uid_diff,
+                operation=operation,
+                max_entries=client.config.cache.transaction_log_size,
+            )
+    finally:
+        await client.close()
+
+
+async def _handle_start(args: argparse.Namespace) -> None:
+    """Start a task: change status from NEEDS-ACTION to IN-PROCESS."""
+    await _change_status(args, "IN-PROCESS", "start")
+
+
+async def _handle_stop(args: argparse.Namespace) -> None:
+    """Stop a task: change status from IN-PROCESS to NEEDS-ACTION."""
+    await _change_status(args, "NEEDS-ACTION", "stop")
 
 
 async def _handle_delete(args: argparse.Namespace) -> None:
@@ -894,6 +936,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     do_parser = subparsers.add_parser("do")
     do_parser.set_defaults(func=_handle_do)
+
+    start_parser = subparsers.add_parser("start")
+    start_parser.set_defaults(func=_handle_start)
+
+    stop_parser = subparsers.add_parser("stop")
+    stop_parser.set_defaults(func=_handle_stop)
 
     delete_parser = subparsers.add_parser("del")
     delete_parser.set_defaults(func=_handle_delete)
