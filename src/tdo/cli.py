@@ -519,6 +519,13 @@ def _filter_active_tasks(tasks: list[Task]) -> list[Task]:
     return [task for task in tasks if not _is_task_completed(task)]
 
 
+def _is_task_waiting(task: Task) -> bool:
+    """Return True if task has a wait date in the future."""
+    if task.data.wait is None:
+        return False
+    return task.data.wait > datetime.now(task.data.wait.tzinfo)
+
+
 def _normalize_tokens(tokens: Sequence[str] | None) -> list[str]:
     return [token for token in tokens or [] if token != "--"]
 
@@ -718,6 +725,8 @@ async def _handle_list(args: argparse.Namespace) -> None:
                 print("no cached tasks found; run 'tdo pull' to synchronize")
             return
         active_tasks = _filter_active_tasks(tasks)
+        # Filter out tasks with future wait dates
+        active_tasks = [t for t in active_tasks if not _is_task_waiting(t)]
         if not active_tasks:
             print("no tasks match filter")
             return
@@ -738,6 +747,33 @@ async def _handle_list(args: argparse.Namespace) -> None:
             if started or backlog:
                 print()
             _pretty_print_tasks(other, config.show_uids, title="Other")
+    finally:
+        await client.close()
+
+
+async def _handle_wait(args: argparse.Namespace) -> None:
+    """Show tasks with future wait dates."""
+    config = _resolve_config(args.env)
+    client = await _cache_client(args.env)
+    try:
+        task_filter = getattr(args, "task_filter", None)
+        if task_filter:
+            tasks = await client.list_tasks_filtered(task_filter)
+        else:
+            tasks = await client.list_tasks()
+        if not tasks:
+            if task_filter:
+                print("no tasks match filter")
+            else:
+                print("no cached tasks found; run 'tdo pull' to synchronize")
+            return
+        active_tasks = _filter_active_tasks(tasks)
+        # Only show tasks with future wait dates
+        waiting_tasks = [t for t in active_tasks if _is_task_waiting(t)]
+        if not waiting_tasks:
+            print("no waiting tasks")
+            return
+        _pretty_print_tasks(waiting_tasks, config.show_uids, title="Waiting")
     finally:
         await client.close()
 
@@ -948,6 +984,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     list_parser = subparsers.add_parser("list")
     list_parser.set_defaults(func=_handle_list)
+
+    waiting_parser = subparsers.add_parser("waiting")
+    waiting_parser.set_defaults(func=_handle_wait)
 
     pull_parser = subparsers.add_parser("pull")
     pull_parser.set_defaults(func=_handle_pull)
