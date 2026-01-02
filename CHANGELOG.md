@@ -1,3 +1,18 @@
+## 0.8.0 (2026-01-01)
+
+### Feat
+
+- **cli**: Add start and stop commands for task status transitions
+- Seperate the listed tasks by started and backlog.
+- Change default action state to NEEDS-ACTION
+- **cli**: Add undo command to revert last transaction
+- **cache**: Add transaction log for TaskSetDiff operations
+
+### Refactor
+
+- **cache**: Split tasks into three tables for cleaner state management
+- ruff check --fix
+
 ## 0.7.0 (2025-12-31)
 
 ### Feat
