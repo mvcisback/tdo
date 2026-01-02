@@ -109,6 +109,23 @@ class DummyClient:
             result = [t for t in result if t.task_index in task_filter.indices]
         return result
 
+    async def list_active_tasks(
+        self,
+        *,
+        exclude_waiting: bool = True,
+        task_filter: "TaskFilter | None" = None,
+    ) -> list[Task]:
+        # For tests, just return all tasks (no waiting logic needed)
+        return await self.list_tasks_filtered(task_filter)
+
+    async def list_waiting_tasks(
+        self,
+        *,
+        task_filter: "TaskFilter | None" = None,
+    ) -> list[Task]:
+        # For tests, return empty list (no waiting tasks by default)
+        return []
+
 
 async def _mock_cache_client(env: str | None) -> DummyClient:
     config = CaldavConfig(

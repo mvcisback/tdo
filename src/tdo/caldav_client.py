@@ -8,6 +8,8 @@ from time import perf_counter
 from typing import Dict, TYPE_CHECKING
 from uuid import uuid4
 
+import arrow
+
 from .config import CaldavConfig
 from .diff import TaskDiff, TaskSetDiff
 from .models import Task, TaskData, TaskPatch, TaskPayload
@@ -123,6 +125,26 @@ class CalDAVClient:
 
     async def list_tasks_filtered(self, task_filter: "TaskFilter | None" = None) -> list[Task]:
         return await self._ensure_cache().list_tasks_filtered(task_filter)
+
+    async def list_active_tasks(
+        self,
+        *,
+        exclude_waiting: bool = True,
+        task_filter: "TaskFilter | None" = None,
+    ) -> list[Task]:
+        """List active tasks using SQL filtering."""
+        return await self._ensure_cache().list_active_tasks(
+            exclude_waiting=exclude_waiting,
+            task_filter=task_filter,
+        )
+
+    async def list_waiting_tasks(
+        self,
+        *,
+        task_filter: "TaskFilter | None" = None,
+    ) -> list[Task]:
+        """List waiting tasks using SQL filtering."""
+        return await self._ensure_cache().list_waiting_tasks(task_filter=task_filter)
 
     async def create_task(self, payload: TaskPayload) -> Task:
         uid = self._uid_from_summary(payload.summary)
@@ -439,14 +461,18 @@ class CalDAVClient:
             if not line or ":" not in line:
                 continue
             key, value = line.split(":", 1)
-            if key == "SUMMARY":
+            # Handle DUE;TZID=...:value or DUE:value
+            if key == "DUE" or key.startswith("DUE;"):
+                tzid = self._extract_tzid(key)
+                due = self._parse_due(value, tzid)
+            # Handle DTSTART;TZID=...:value or DTSTART:value (wait)
+            elif key == "DTSTART" or key.startswith("DTSTART;"):
+                tzid = self._extract_tzid(key)
+                wait = self._parse_due(value, tzid)
+            elif key == "SUMMARY":
                 summary = value
             elif key == "UID":
                 uid = value
-            elif key == "DUE":
-                due = self._parse_due(value)
-            elif key == "DTSTART":
-                wait = self._parse_due(value)
             elif key == "PRIORITY":
                 try:
                     priority = int(value)
@@ -471,11 +497,45 @@ class CalDAVClient:
             ),
         )
 
-    def _parse_due(self, raw: str) -> datetime | None:
+    def _extract_tzid(self, key: str) -> str | None:
+        """Extract TZID from a property key like 'DUE;TZID=America/New_York'."""
+        if ";" not in key:
+            return None
+        for param in key.split(";")[1:]:
+            if param.startswith("TZID="):
+                return param[5:]
+        return None
+
+    def _parse_due(self, raw: str, tzid: str | None = None) -> datetime | None:
+        """Parse iCalendar date-time and normalize to UTC.
+
+        Handles:
+        - 20250102T030405Z (UTC with Z suffix)
+        - 20250102T030405 with tzid (timezone-aware)
+        - 20250102T030405 without tzid (assume local, convert to UTC)
+        """
+        if not raw:
+            return None
+
         try:
+            # Handle Z suffix (already UTC)
             if raw.endswith("Z"):
                 return datetime.strptime(raw, "%Y%m%dT%H%M%SZ")
-            return datetime.strptime(raw, "%Y%m%dT%H%M%S")
+
+            # Parse the datetime value
+            dt = datetime.strptime(raw, "%Y%m%dT%H%M%S")
+
+            # If timezone provided, use arrow to convert to UTC
+            if tzid:
+                try:
+                    parsed = arrow.get(dt, tzid)
+                    return parsed.to("UTC").naive
+                except Exception:
+                    # Fall back to treating as local time
+                    pass
+
+            # No timezone - assume local time, convert to UTC
+            return arrow.get(dt).to("UTC").naive
         except ValueError:
             return None
 

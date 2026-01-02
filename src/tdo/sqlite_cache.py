@@ -63,6 +63,13 @@ def _parse_list(raw: str | None) -> list[str]:
     return []
 
 
+def _to_utc_timestamp(dt: datetime | None) -> float | None:
+    """Convert datetime to UTC Unix timestamp."""
+    if dt is None:
+        return None
+    return dt.timestamp()
+
+
 class SqliteTaskCache:
     def __init__(self, path: Path | None = None, *, env: str = "default"):
         resolved = self._resolve_path(path, env)
@@ -118,6 +125,8 @@ class SqliteTaskCache:
             status TEXT NOT NULL,
             due TEXT,
             wait TEXT,
+            due_utc REAL,
+            wait_utc REAL,
             priority INTEGER,
             x_properties TEXT,
             categories TEXT,
@@ -131,6 +140,8 @@ class SqliteTaskCache:
         CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
         CREATE INDEX IF NOT EXISTS idx_tasks_dirty ON tasks(pending_action);
         CREATE INDEX IF NOT EXISTS idx_tasks_index ON tasks(task_index);
+        CREATE INDEX IF NOT EXISTS idx_tasks_due_utc ON tasks(due_utc);
+        CREATE INDEX IF NOT EXISTS idx_tasks_wait_utc ON tasks(wait_utc);
 
         CREATE TABLE IF NOT EXISTS completed_tasks (
             uid TEXT PRIMARY KEY,
@@ -138,6 +149,8 @@ class SqliteTaskCache:
             status TEXT NOT NULL,
             due TEXT,
             wait TEXT,
+            due_utc REAL,
+            wait_utc REAL,
             priority INTEGER,
             x_properties TEXT,
             categories TEXT,
@@ -156,6 +169,8 @@ class SqliteTaskCache:
             status TEXT NOT NULL,
             due TEXT,
             wait TEXT,
+            due_utc REAL,
+            wait_utc REAL,
             priority INTEGER,
             x_properties TEXT,
             categories TEXT,
@@ -195,6 +210,17 @@ class SqliteTaskCache:
         # Migration: move deleted=1 rows to deleted_tasks, completed to completed_tasks
         if "deleted" in columns:
             await self._migrate_to_three_tables()
+
+        # Migration: add UTC timestamp columns for efficient SQL filtering
+        if "due_utc" not in columns:
+            await self._conn.execute("ALTER TABLE tasks ADD COLUMN due_utc REAL")
+            await self._conn.execute("ALTER TABLE tasks ADD COLUMN wait_utc REAL")
+            await self._conn.execute("ALTER TABLE completed_tasks ADD COLUMN due_utc REAL")
+            await self._conn.execute("ALTER TABLE completed_tasks ADD COLUMN wait_utc REAL")
+            await self._conn.execute("ALTER TABLE deleted_tasks ADD COLUMN due_utc REAL")
+            await self._conn.execute("ALTER TABLE deleted_tasks ADD COLUMN wait_utc REAL")
+            await self._conn.commit()
+            await self._backfill_utc_columns()
 
     async def _migrate_to_three_tables(self) -> None:
         """Migrate from single tasks table with deleted flag to three tables."""
@@ -295,6 +321,43 @@ class SqliteTaskCache:
             )
         await self._conn.commit()
 
+    async def _backfill_utc_columns(self) -> None:
+        """Backfill due_utc and wait_utc from existing TEXT columns."""
+        assert self._conn is not None
+
+        for table in ["tasks", "completed_tasks", "deleted_tasks"]:
+            cursor = await self._conn.execute(
+                f"SELECT uid, due, wait FROM {table} WHERE due IS NOT NULL OR wait IS NOT NULL"
+            )
+            rows = await cursor.fetchall()
+
+            for row in rows:
+                uid, due_text, wait_text = row
+                due_utc = None
+                wait_utc = None
+
+                if due_text:
+                    try:
+                        dt = datetime.fromisoformat(due_text)
+                        due_utc = dt.timestamp()
+                    except ValueError:
+                        pass
+
+                if wait_text:
+                    try:
+                        dt = datetime.fromisoformat(wait_text)
+                        wait_utc = dt.timestamp()
+                    except ValueError:
+                        pass
+
+                if due_utc is not None or wait_utc is not None:
+                    await self._conn.execute(
+                        f"UPDATE {table} SET due_utc = ?, wait_utc = ? WHERE uid = ?",
+                        (due_utc, wait_utc, uid)
+                    )
+
+        await self._conn.commit()
+
     async def _next_available_index(self) -> int:
         """Find smallest hole or increment max."""
         assert self._conn is not None
@@ -368,6 +431,76 @@ class SqliteTaskCache:
         else:
             where = ""
         query = f"SELECT * FROM tasks{where} ORDER BY due IS NULL, due"
+
+        async with self._conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        return [self._build_task(row) for row in rows]
+
+    async def list_active_tasks(
+        self,
+        *,
+        exclude_waiting: bool = True,
+        task_filter: TaskFilter | None = None,
+    ) -> list[Task]:
+        """List active (non-completed, non-waiting) tasks with optional filters.
+
+        Uses UTC columns for date comparisons.
+        """
+        assert self._conn is not None
+        conditions: list[str] = []
+        params: list[float | str] = []
+
+        # Exclude waiting tasks by comparing wait_utc to current time
+        if exclude_waiting:
+            now_utc = time.time()
+            conditions.append("(wait_utc IS NULL OR wait_utc <= ?)")
+            params.append(now_utc)
+
+        # Apply metadata filters
+        if task_filter:
+            if task_filter.project:
+                conditions.append("json_extract(x_properties, '$.X-PROJECT') = ?")
+                params.append(task_filter.project)
+            for tag in task_filter.tags:
+                conditions.append("categories LIKE ?")
+                params.append(f'%"{tag}"%')
+            if task_filter.indices:
+                placeholders = ",".join("?" for _ in task_filter.indices)
+                conditions.append(f"task_index IN ({placeholders})")
+                params.extend(str(i) for i in task_filter.indices)
+
+        where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+        query = f"SELECT * FROM tasks{where_clause} ORDER BY due_utc IS NULL, due_utc"
+
+        async with self._conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        return [self._build_task(row) for row in rows]
+
+    async def list_waiting_tasks(
+        self,
+        *,
+        task_filter: TaskFilter | None = None,
+    ) -> list[Task]:
+        """List tasks with future wait dates."""
+        assert self._conn is not None
+        now_utc = time.time()
+        conditions: list[str] = ["wait_utc IS NOT NULL", "wait_utc > ?"]
+        params: list[float | str] = [now_utc]
+
+        if task_filter:
+            if task_filter.project:
+                conditions.append("json_extract(x_properties, '$.X-PROJECT') = ?")
+                params.append(task_filter.project)
+            for tag in task_filter.tags:
+                conditions.append("categories LIKE ?")
+                params.append(f'%"{tag}"%')
+            if task_filter.indices:
+                placeholders = ",".join("?" for _ in task_filter.indices)
+                conditions.append(f"task_index IN ({placeholders})")
+                params.extend(str(i) for i in task_filter.indices)
+
+        where_clause = " WHERE " + " AND ".join(conditions)
+        query = f"SELECT * FROM tasks{where_clause} ORDER BY wait_utc"
 
         async with self._conn.execute(query, params) as cursor:
             rows = await cursor.fetchall()
@@ -532,6 +665,8 @@ class SqliteTaskCache:
         status = task.data.status or "NEEDS-ACTION"
         due_value = task.data.due.isoformat() if task.data.due else None
         wait_value = task.data.wait.isoformat() if task.data.wait else None
+        due_utc = _to_utc_timestamp(task.data.due)
+        wait_utc = _to_utc_timestamp(task.data.wait)
         priority = task.data.priority
         x_props = _serialize_map(task.data.x_properties)
         categories = _serialize_properties(task.data.categories)
@@ -560,6 +695,8 @@ class SqliteTaskCache:
                 status,
                 due,
                 wait,
+                due_utc,
+                wait_utc,
                 priority,
                 x_properties,
                 categories,
@@ -568,12 +705,14 @@ class SqliteTaskCache:
                 last_synced,
                 updated_at,
                 task_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(uid) DO UPDATE SET
                 summary = excluded.summary,
                 status = excluded.status,
                 due = excluded.due,
                 wait = excluded.wait,
+                due_utc = excluded.due_utc,
+                wait_utc = excluded.wait_utc,
                 priority = excluded.priority,
                 x_properties = excluded.x_properties,
                 categories = excluded.categories,
@@ -589,6 +728,8 @@ class SqliteTaskCache:
                 status,
                 due_value,
                 wait_value,
+                due_utc,
+                wait_utc,
                 priority,
                 x_props,
                 categories,
@@ -617,6 +758,8 @@ class SqliteTaskCache:
         status = task.data.status or "COMPLETED"
         due_value = task.data.due.isoformat() if task.data.due else None
         wait_value = task.data.wait.isoformat() if task.data.wait else None
+        due_utc = _to_utc_timestamp(task.data.due)
+        wait_utc = _to_utc_timestamp(task.data.wait)
         priority = task.data.priority
         x_props = _serialize_map(task.data.x_properties)
         categories = _serialize_properties(task.data.categories)
@@ -631,6 +774,8 @@ class SqliteTaskCache:
                 status,
                 due,
                 wait,
+                due_utc,
+                wait_utc,
                 priority,
                 x_properties,
                 categories,
@@ -640,12 +785,14 @@ class SqliteTaskCache:
                 updated_at,
                 completed_at,
                 task_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(uid) DO UPDATE SET
                 summary = excluded.summary,
                 status = excluded.status,
                 due = excluded.due,
                 wait = excluded.wait,
+                due_utc = excluded.due_utc,
+                wait_utc = excluded.wait_utc,
                 priority = excluded.priority,
                 x_properties = excluded.x_properties,
                 categories = excluded.categories,
@@ -662,6 +809,8 @@ class SqliteTaskCache:
                 status,
                 due_value,
                 wait_value,
+                due_utc,
+                wait_utc,
                 priority,
                 x_props,
                 categories,
@@ -687,6 +836,8 @@ class SqliteTaskCache:
         status = task.data.status or "NEEDS-ACTION"
         due_value = task.data.due.isoformat() if task.data.due else None
         wait_value = task.data.wait.isoformat() if task.data.wait else None
+        due_utc = _to_utc_timestamp(task.data.due)
+        wait_utc = _to_utc_timestamp(task.data.wait)
         priority = task.data.priority
         x_props = _serialize_map(task.data.x_properties)
         categories = _serialize_properties(task.data.categories)
@@ -699,6 +850,8 @@ class SqliteTaskCache:
                 status,
                 due,
                 wait,
+                due_utc,
+                wait_utc,
                 priority,
                 x_properties,
                 categories,
@@ -706,12 +859,14 @@ class SqliteTaskCache:
                 last_synced,
                 deleted_at,
                 task_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(uid) DO UPDATE SET
                 summary = excluded.summary,
                 status = excluded.status,
                 due = excluded.due,
                 wait = excluded.wait,
+                due_utc = excluded.due_utc,
+                wait_utc = excluded.wait_utc,
                 priority = excluded.priority,
                 x_properties = excluded.x_properties,
                 categories = excluded.categories,
@@ -726,6 +881,8 @@ class SqliteTaskCache:
                 status,
                 due_value,
                 wait_value,
+                due_utc,
+                wait_utc,
                 priority,
                 x_props,
                 categories,

@@ -224,13 +224,15 @@ class TaskSetDiff(Generic[K]):
                 # Determine target table based on status
                 if post.status == "COMPLETED":
                     sql = """
-                        INSERT INTO completed_tasks (uid, summary, status, due, wait, priority, x_properties, categories, updated_at, completed_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO completed_tasks (uid, summary, status, due, wait, due_utc, wait_utc, priority, x_properties, categories, updated_at, completed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(uid) DO UPDATE SET
                             summary = excluded.summary,
                             status = excluded.status,
                             due = excluded.due,
                             wait = excluded.wait,
+                            due_utc = excluded.due_utc,
+                            wait_utc = excluded.wait_utc,
                             priority = excluded.priority,
                             x_properties = excluded.x_properties,
                             categories = excluded.categories,
@@ -244,6 +246,8 @@ class TaskSetDiff(Generic[K]):
                         post.status,
                         post.due.isoformat() if post.due else None,
                         post.wait.isoformat() if post.wait else None,
+                        _to_utc_timestamp(post.due),
+                        _to_utc_timestamp(post.wait),
                         post.priority,
                         _serialize_map(post.x_properties),
                         _serialize_list(post.categories),
@@ -252,13 +256,15 @@ class TaskSetDiff(Generic[K]):
                     )
                 else:
                     sql = """
-                        INSERT INTO tasks (uid, summary, status, due, wait, priority, x_properties, categories, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO tasks (uid, summary, status, due, wait, due_utc, wait_utc, priority, x_properties, categories, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(uid) DO UPDATE SET
                             summary = excluded.summary,
                             status = excluded.status,
                             due = excluded.due,
                             wait = excluded.wait,
+                            due_utc = excluded.due_utc,
+                            wait_utc = excluded.wait_utc,
                             priority = excluded.priority,
                             x_properties = excluded.x_properties,
                             categories = excluded.categories,
@@ -270,6 +276,8 @@ class TaskSetDiff(Generic[K]):
                         post.status or "NEEDS-ACTION",
                         post.due.isoformat() if post.due else None,
                         post.wait.isoformat() if post.wait else None,
+                        _to_utc_timestamp(post.due),
+                        _to_utc_timestamp(post.wait),
                         post.priority,
                         _serialize_map(post.x_properties),
                         _serialize_list(post.categories),
@@ -286,6 +294,8 @@ class TaskSetDiff(Generic[K]):
                         status = ?,
                         due = ?,
                         wait = ?,
+                        due_utc = ?,
+                        wait_utc = ?,
                         priority = ?,
                         x_properties = ?,
                         categories = ?,
@@ -297,6 +307,8 @@ class TaskSetDiff(Generic[K]):
                     post.status or "NEEDS-ACTION",
                     post.due.isoformat() if post.due else None,
                     post.wait.isoformat() if post.wait else None,
+                    _to_utc_timestamp(post.due),
+                    _to_utc_timestamp(post.wait),
                     post.priority,
                     _serialize_map(post.x_properties),
                     _serialize_list(post.categories),
@@ -436,3 +448,10 @@ def _serialize_map(value: dict[str, str] | None) -> str:
 def _serialize_list(value: list[str] | None) -> str:
     """Serialize a list to JSON string."""
     return json.dumps(list(value or []))
+
+
+def _to_utc_timestamp(dt: datetime | None) -> float | None:
+    """Convert datetime to UTC Unix timestamp."""
+    if dt is None:
+        return None
+    return dt.timestamp()

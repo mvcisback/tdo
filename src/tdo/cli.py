@@ -712,21 +712,21 @@ async def _handle_list(args: argparse.Namespace) -> None:
     config = _resolve_config(args.env)
     client = await _cache_client(args.env)
     try:
-        # Use filtered query if metadata filters are provided
         task_filter = getattr(args, "task_filter", None)
-        if task_filter:
-            tasks = await client.list_tasks_filtered(task_filter)
-        else:
-            tasks = await client.list_tasks()
+        # Use SQL-based filtering that excludes waiting tasks
+        tasks = await client.list_active_tasks(
+            exclude_waiting=True,
+            task_filter=task_filter,
+        )
         if not tasks:
             if task_filter:
                 print("no tasks match filter")
             else:
                 print("no cached tasks found; run 'tdo pull' to synchronize")
             return
-        active_tasks = _filter_active_tasks(tasks)
-        # Filter out tasks with future wait dates
-        active_tasks = [t for t in active_tasks if not _is_task_waiting(t)]
+
+        # Filter out completed tasks (they're in a separate table, but just in case)
+        active_tasks = [t for t in tasks if t.data.status != "COMPLETED"]
         if not active_tasks:
             print("no tasks match filter")
             return
@@ -757,19 +757,8 @@ async def _handle_wait(args: argparse.Namespace) -> None:
     client = await _cache_client(args.env)
     try:
         task_filter = getattr(args, "task_filter", None)
-        if task_filter:
-            tasks = await client.list_tasks_filtered(task_filter)
-        else:
-            tasks = await client.list_tasks()
-        if not tasks:
-            if task_filter:
-                print("no tasks match filter")
-            else:
-                print("no cached tasks found; run 'tdo pull' to synchronize")
-            return
-        active_tasks = _filter_active_tasks(tasks)
-        # Only show tasks with future wait dates
-        waiting_tasks = [t for t in active_tasks if _is_task_waiting(t)]
+        # Use SQL-based filtering for waiting tasks
+        waiting_tasks = await client.list_waiting_tasks(task_filter=task_filter)
         if not waiting_tasks:
             print("no waiting tasks")
             return
