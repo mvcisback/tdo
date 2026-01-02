@@ -131,7 +131,7 @@ class CalDAVClient:
             uid=uid,
             data=TaskData(
                 summary=payload.summary,
-                status=payload.status or "IN-PROCESS",
+                status=payload.status or "NEEDS-ACTION",
                 due=payload.due,
                 wait=payload.wait,
                 priority=payload.priority,
@@ -462,7 +462,7 @@ class CalDAVClient:
             uid=uid,
             data=TaskData(
                 summary=summary,
-                status=status or "IN-PROCESS",
+                status=status or "NEEDS-ACTION",
                 due=due,
                 wait=wait,
                 priority=priority,

@@ -529,7 +529,7 @@ class SqliteTaskCache:
     ) -> None:
         """Insert or update a task in the active tasks table."""
         summary = task.data.summary or task.uid
-        status = task.data.status or "IN-PROCESS"
+        status = task.data.status or "NEEDS-ACTION"
         due_value = task.data.due.isoformat() if task.data.due else None
         wait_value = task.data.wait.isoformat() if task.data.wait else None
         priority = task.data.priority
@@ -684,7 +684,7 @@ class SqliteTaskCache:
     ) -> None:
         """Insert a task into the deleted_tasks table (pending deletion)."""
         summary = task.data.summary or task.uid
-        status = task.data.status or "IN-PROCESS"
+        status = task.data.status or "NEEDS-ACTION"
         due_value = task.data.due.isoformat() if task.data.due else None
         wait_value = task.data.wait.isoformat() if task.data.wait else None
         priority = task.data.priority
@@ -876,14 +876,14 @@ class SqliteTaskCache:
             rows = await cursor.fetchall()
         return [self._build_deleted_task(row) for row in rows]
 
-    async def restore_from_completed(self, uid: str, *, status: str = "IN-PROCESS") -> Task:
+    async def restore_from_completed(self, uid: str, *, status: str = "NEEDS-ACTION") -> Task:
         """Move a task from completed_tasks back to tasks.
 
         Used for undo. Tries to restore original index, falls back to new index.
 
         Args:
             uid: Task UID
-            status: Status to set (default IN-PROCESS)
+            status: Status to set (default NEEDS-ACTION)
 
         Returns:
             The restored task

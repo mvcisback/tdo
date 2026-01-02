@@ -267,7 +267,7 @@ class TaskSetDiff(Generic[K]):
                     params = (
                         uid,
                         post.summary or uid,
-                        post.status or "IN-PROCESS",
+                        post.status or "NEEDS-ACTION",
                         post.due.isoformat() if post.due else None,
                         post.wait.isoformat() if post.wait else None,
                         post.priority,
@@ -294,7 +294,7 @@ class TaskSetDiff(Generic[K]):
                 """
                 params = (
                     post.summary or uid,
-                    post.status or "IN-PROCESS",
+                    post.status or "NEEDS-ACTION",
                     post.due.isoformat() if post.due else None,
                     post.wait.isoformat() if post.wait else None,
                     post.priority,

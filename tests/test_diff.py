@@ -10,7 +10,7 @@ from tdo.models import Task, TaskData
 
 def _make_task_data(
     summary: str = "test",
-    status: str = "IN-PROCESS",
+    status: str = "NEEDS-ACTION",
     due: datetime | None = None,
     priority: int | None = None,
 ) -> TaskData[datetime]:
@@ -27,7 +27,7 @@ def _make_task_data(
 def _make_task(
     uid: str,
     summary: str = "test",
-    status: str = "IN-PROCESS",
+    status: str = "NEEDS-ACTION",
     due: datetime | None = None,
     task_index: int | None = None,
 ) -> Task:
@@ -227,7 +227,7 @@ class TestTaskSetDiff:
         assert params == ("uid1",)
 
     def test_as_sql_generates_insert(self) -> None:
-        post = _make_task_data("new task", status="IN-PROCESS")
+        post = _make_task_data("new task", status="NEEDS-ACTION")
         diff = TaskSetDiff(diffs={"uid1": TaskDiff(pre=None, post=post)})
         statements = diff.as_sql()
 

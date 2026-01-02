@@ -183,7 +183,7 @@ def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
         priority=add.priority,
         due=due,
         wait=wait,
-        status=add.status or "IN-PROCESS",
+        status=add.status or "NEEDS-ACTION",
         x_properties=x_properties,
         categories=categories if categories else None,
     )
@@ -793,7 +793,7 @@ async def _handle_undo(args: argparse.Namespace) -> None:
                 # Undo complete: move from completed_tasks back to tasks
                 # The inverse diff has is_update with post.status != COMPLETED
                 if diff.is_update and diff.post and diff.post.status != "COMPLETED":
-                    await cache.restore_from_completed(uid, status=diff.post.status or "IN-PROCESS")
+                    await cache.restore_from_completed(uid, status=diff.post.status or "NEEDS-ACTION")
 
             elif operation == "delete":
                 # Undo delete: restore from deleted_tasks to tasks
