@@ -313,9 +313,13 @@ def _format_due_date(due: datetime | None) -> str:
     return due.strftime("%Y-%m-%d")
 
 
-def _pretty_print_tasks(tasks: list[Task], show_uids: bool) -> None:
+def _pretty_print_tasks(
+    tasks: list[Task], show_uids: bool, *, title: str | None = None
+) -> None:
     console = Console(file=sys.stdout, color_system="auto")
     table = Table(
+        title=title,
+        title_style="bold",
         box=box.SIMPLE_HEAVY,
         show_header=True,
         header_style="bold cyan",
@@ -675,7 +679,23 @@ async def _handle_list(args: argparse.Namespace) -> None:
         if not active_tasks:
             print("no tasks match filter")
             return
-        _pretty_print_tasks(active_tasks, config.show_uids)
+
+        # Split tasks by status: IN-PROCESS (started) and NEEDS-ACTION (backlog)
+        started = [t for t in active_tasks if t.data.status == "IN-PROCESS"]
+        backlog = [t for t in active_tasks if t.data.status == "NEEDS-ACTION"]
+
+        if started:
+            _pretty_print_tasks(started, config.show_uids, title="Started")
+        if backlog:
+            if started:
+                print()  # Blank line between tables
+            _pretty_print_tasks(backlog, config.show_uids, title="Backlog")
+        # Handle tasks with other statuses (if any)
+        other = [t for t in active_tasks if t.data.status not in ("IN-PROCESS", "NEEDS-ACTION", "COMPLETED")]
+        if other:
+            if started or backlog:
+                print()
+            _pretty_print_tasks(other, config.show_uids, title="Other")
     finally:
         await client.close()
 
