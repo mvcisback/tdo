@@ -585,7 +585,6 @@ async def _handle_modify(args: argparse.Namespace) -> None:
 
 
 async def _handle_do(args: argparse.Namespace) -> None:
-    patch = TaskPatch(status="COMPLETED")
     client = await _cache_client(args.env)
     try:
         tasks = _select_tasks_for_filter(
@@ -597,8 +596,19 @@ async def _handle_do(args: argparse.Namespace) -> None:
         diffs: dict[int, TaskDiff] = {}
         index_to_uid: dict[int, str] = {}
         for task in tasks:
-            updated = await client.modify_task(task, patch)
-            diffs[task.task_index] = TaskDiff(pre=task.data, post=updated.data)
+            # Use complete_task to move task to completed_tasks table
+            await client.complete_task(task.uid)
+            # Build diff with original data -> completed status
+            completed_data = TaskData(
+                summary=task.data.summary,
+                status="COMPLETED",
+                due=task.data.due,
+                wait=task.data.wait,
+                priority=task.data.priority,
+                x_properties=task.data.x_properties,
+                categories=task.data.categories,
+            )
+            diffs[task.task_index] = TaskDiff(pre=task.data, post=completed_data)
             index_to_uid[task.task_index] = task.uid
         result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
         print(result.pretty())
@@ -769,18 +779,49 @@ async def _handle_undo(args: argparse.Namespace) -> None:
         if entry is None:
             _exit_with_message("no transactions to undo")
 
-        # Deserialize and invert the diff
+        # Deserialize the diff
         original_diff = TaskSetDiff.from_json(entry.diff_json)
         inverse_diff = original_diff.inv()
+        operation = entry.operation
 
-        # Apply inverse to database
-        sql_statements = inverse_diff.as_sql()
-        for sql, params in sql_statements:
-            await cache._conn.execute(sql, params)
-        await cache._conn.commit()
+        # Apply undo based on operation type
+        for uid, diff in inverse_diff.diffs.items():
+            if diff.is_noop:
+                continue
+
+            if operation == "do":
+                # Undo complete: move from completed_tasks back to tasks
+                # The inverse diff has is_update with post.status != COMPLETED
+                if diff.is_update and diff.post and diff.post.status != "COMPLETED":
+                    await cache.restore_from_completed(uid, status=diff.post.status or "IN-PROCESS")
+
+            elif operation == "delete":
+                # Undo delete: restore from deleted_tasks to tasks
+                if diff.is_create:
+                    deleted_task = await cache.get_deleted_task(uid)
+                    if deleted_task:
+                        await cache.restore_from_deleted(uid)
+                    else:
+                        # Task was already pushed and flushed, use as_sql fallback
+                        sql_statements = TaskSetDiff(diffs={uid: diff}).as_sql()
+                        for sql, params in sql_statements:
+                            await cache._conn.execute(sql, params)
+                        await cache._conn.commit()
+
+            elif operation == "add":
+                # Undo add: delete from tasks
+                if diff.is_delete:
+                    await cache.delete_task(uid)
+
+            else:
+                # Fallback for modify and other operations: use as_sql
+                sql_statements = TaskSetDiff(diffs={uid: diff}).as_sql()
+                for sql, params in sql_statements:
+                    await cache._conn.execute(sql, params)
+                await cache._conn.commit()
 
         # Display what was undone
-        print(f"Undid {entry.operation or 'operation'}:")
+        print(f"Undid {operation or 'operation'}:")
         print(inverse_diff.pretty())
     finally:
         await client.close()

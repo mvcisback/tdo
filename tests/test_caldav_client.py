@@ -110,4 +110,7 @@ async def test_delete_marks_remote_task_as_pending(client: CalDAVClient) -> None
     existing = Task(uid="remote", data=TaskData(summary="Remote"))
     await client.cache.upsert_task(existing)
     await client.delete_task(existing.uid)
-    assert await client.cache.get_pending_action(existing.uid) == "delete"
+    # With the three-table architecture, deleted tasks are moved to deleted_tasks table
+    deleted_task = await client.cache.get_deleted_task(existing.uid)
+    assert deleted_task is not None
+    assert deleted_task.uid == existing.uid

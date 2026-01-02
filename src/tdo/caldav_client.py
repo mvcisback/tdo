@@ -155,15 +155,17 @@ class CalDAVClient:
 
     async def delete_task(self, uid: str) -> str:
         cache = self._ensure_cache()
-        task = await cache.get_task(uid)
-        if task is None:
-            raise KeyError(f"task {uid} not found")
-        pending_action = await cache.get_pending_action(uid)
-        if pending_action == "create":
-            await cache.delete_task(uid)
-            return uid
-        await cache.upsert_task(task, pending_action="delete", deleted=True)
+        # mark_for_deletion handles both active and completed tasks,
+        # and also handles the case where task was never synced (pending create)
+        await cache.mark_for_deletion(uid)
         return uid
+
+    async def complete_task(self, uid: str) -> None:
+        """Mark a task as completed.
+
+        Moves the task from tasks to completed_tasks with status COMPLETED.
+        """
+        await self._ensure_cache().complete_task(uid)
 
     def _apply_patch(self, task: Task, patch: TaskPatch) -> Task:
         summary = patch.summary or task.data.summary or task.uid
@@ -290,17 +292,29 @@ class CalDAVClient:
                     diffs[index] = TaskDiff(pre=None, post=task.data)
                 elif entry.action == "update":
                     synced = self._push_update(task, calendar)
-                    await cache.upsert_task(
-                        synced,
-                        last_synced=time.time(),
-                        clear_pending=True,
-                    )
+                    # Handle updates from both tasks and completed_tasks
+                    if task.data.status == "COMPLETED":
+                        await cache._insert_completed_task(
+                            synced,
+                            pending_action=None,
+                            last_synced=time.time(),
+                            completed_at=time.time(),
+                            task_index=task.task_index,
+                        )
+                    else:
+                        await cache.upsert_task(
+                            synced,
+                            last_synced=time.time(),
+                            clear_pending=True,
+                        )
                     # Use empty TaskData as synthetic pre to trigger is_update
                     diffs[index] = TaskDiff(pre=TaskData(), post=task.data)
                 else:  # delete
                     self._push_delete(task, calendar)
-                    await cache.delete_task(task.uid)
                     diffs[index] = TaskDiff(pre=task.data, post=None)
+
+            # Flush all deleted tasks after successful push
+            await cache.flush_deleted_tasks()
 
         diff: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
 

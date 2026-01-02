@@ -201,6 +201,10 @@ class TaskSetDiff(Generic[K]):
         """Convert to list of (sql, params) statements.
 
         Only works for TaskSetDiff[str] (uid-keyed).
+
+        Note: With the three-table architecture (tasks, completed_tasks, deleted_tasks),
+        this method handles simple cases. For complex undo operations that require
+        moving between tables, use SqliteTaskCache methods directly.
         """
         statements: list[tuple[str, tuple]] = []
 
@@ -212,39 +216,70 @@ class TaskSetDiff(Generic[K]):
                 continue
 
             if diff.is_delete:
+                # Delete from active tasks table
                 statements.append(("DELETE FROM tasks WHERE uid = ?", (uid,)))
 
             elif diff.is_create and diff.post is not None:
                 post = diff.post
-                sql = """
-                    INSERT INTO tasks (uid, summary, status, due, wait, priority, x_properties, categories, updated_at, deleted)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                    ON CONFLICT(uid) DO UPDATE SET
-                        summary = excluded.summary,
-                        status = excluded.status,
-                        due = excluded.due,
-                        wait = excluded.wait,
-                        priority = excluded.priority,
-                        x_properties = excluded.x_properties,
-                        categories = excluded.categories,
-                        updated_at = excluded.updated_at,
-                        deleted = 0
-                """
-                params = (
-                    uid,
-                    post.summary or uid,
-                    post.status or "IN-PROCESS",
-                    post.due.isoformat() if post.due else None,
-                    post.wait.isoformat() if post.wait else None,
-                    post.priority,
-                    _serialize_map(post.x_properties),
-                    _serialize_list(post.categories),
-                    datetime.now().timestamp(),
-                )
+                # Determine target table based on status
+                if post.status == "COMPLETED":
+                    sql = """
+                        INSERT INTO completed_tasks (uid, summary, status, due, wait, priority, x_properties, categories, updated_at, completed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(uid) DO UPDATE SET
+                            summary = excluded.summary,
+                            status = excluded.status,
+                            due = excluded.due,
+                            wait = excluded.wait,
+                            priority = excluded.priority,
+                            x_properties = excluded.x_properties,
+                            categories = excluded.categories,
+                            updated_at = excluded.updated_at,
+                            completed_at = excluded.completed_at
+                    """
+                    now = datetime.now().timestamp()
+                    params = (
+                        uid,
+                        post.summary or uid,
+                        post.status,
+                        post.due.isoformat() if post.due else None,
+                        post.wait.isoformat() if post.wait else None,
+                        post.priority,
+                        _serialize_map(post.x_properties),
+                        _serialize_list(post.categories),
+                        now,
+                        now,  # completed_at
+                    )
+                else:
+                    sql = """
+                        INSERT INTO tasks (uid, summary, status, due, wait, priority, x_properties, categories, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(uid) DO UPDATE SET
+                            summary = excluded.summary,
+                            status = excluded.status,
+                            due = excluded.due,
+                            wait = excluded.wait,
+                            priority = excluded.priority,
+                            x_properties = excluded.x_properties,
+                            categories = excluded.categories,
+                            updated_at = excluded.updated_at
+                    """
+                    params = (
+                        uid,
+                        post.summary or uid,
+                        post.status or "IN-PROCESS",
+                        post.due.isoformat() if post.due else None,
+                        post.wait.isoformat() if post.wait else None,
+                        post.priority,
+                        _serialize_map(post.x_properties),
+                        _serialize_list(post.categories),
+                        datetime.now().timestamp(),
+                    )
                 statements.append((sql.strip(), params))
 
             elif diff.is_update and diff.post is not None:
                 post = diff.post
+                # Updates go to tasks table (completed tasks have their own update path)
                 sql = """
                     UPDATE tasks SET
                         summary = ?,
