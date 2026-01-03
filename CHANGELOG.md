@@ -1,3 +1,12 @@
+## 0.9.0 (2026-01-02)
+
+### Feat
+
+- **cli**: Add interactive prioritize command
+- **caldav**: Add URL and ATTACH property support
+- **cache**: Add UTC-normalized date columns for SQL-based filtering
+- **cli**: Add waiting command and hide future-wait tasks from list
+
 ## 0.8.0 (2026-01-01)
 
 ### Feat
