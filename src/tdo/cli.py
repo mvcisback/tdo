@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import random
 import sys
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
@@ -379,7 +380,7 @@ def _pretty_print_tasks(
     console.print(table)
 
 
-_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "pull", "push", "show", "start", "stop", "sync", "undo"}
+_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "prioritize", "pull", "push", "show", "start", "stop", "sync", "undo"}
 
 
 def _looks_like_index_filter(value: str) -> bool:
@@ -906,6 +907,63 @@ async def _handle_attach(args: argparse.Namespace) -> None:
         await client.close()
 
 
+async def _handle_prioritize(args: argparse.Namespace) -> None:
+    """Interactive prioritization of tasks."""
+    client = await _cache_client(args.env)
+    task_filter = getattr(args, "task_filter", None)
+    sampling_all = False
+
+    try:
+        while True:
+            # Get unprioritized tasks (with filter)
+            unprioritized = await client.cache.list_unprioritized_tasks(
+                task_filter=task_filter
+            )
+
+            if unprioritized:
+                task = random.choice(unprioritized)
+                show_priority = False
+            else:
+                # All prioritized - sample from all active tasks
+                all_tasks = await client.list_active_tasks(
+                    exclude_waiting=True,
+                    task_filter=task_filter,
+                )
+                if not all_tasks:
+                    print("No tasks to prioritize")
+                    return
+                if not sampling_all:
+                    print("\nAll tasks prioritized! Sampling from all tasks...\n")
+                    sampling_all = True
+                task = random.choice(all_tasks)
+                show_priority = True
+
+            # Display task
+            pri_display = f" (pri: {task.data.priority})" if show_priority and task.data.priority else ""
+            print(f"[{task.task_index}] {task.data.summary}{pri_display}")
+
+            # Prompt for priority
+            try:
+                response = input("Priority (H/M/L/1-9, q=quit): ").strip().lower()
+            except EOFError:
+                return
+
+            if response == "q":
+                return
+
+            priority = _parse_priority(response)
+            if priority is None:
+                print("Invalid priority, try again\n")
+                continue
+
+            # Update task
+            patch = TaskPatch(priority=priority)
+            await client.modify_task(task, patch)
+            print(f"-> Set priority to {priority}\n")
+    finally:
+        await client.close()
+
+
 async def _handle_pull(args: argparse.Namespace) -> None:
     async def _pull(client: "CalDAVClient") -> None:
         result = await client.pull()
@@ -1091,6 +1149,9 @@ def _build_parser() -> argparse.ArgumentParser:
     attach_parser.add_argument("--remove", dest="remove", action="store_true", help="remove attachment")
     attach_parser.add_argument("--list", dest="list_only", action="store_true", help="list attachments")
     attach_parser.set_defaults(func=_handle_attach)
+
+    prioritize_parser = subparsers.add_parser("prioritize")
+    prioritize_parser.set_defaults(func=_handle_prioritize)
 
     config_parser = subparsers.add_parser("config")
     config_parser.set_defaults(func=_handle_config_help, parser=config_parser)

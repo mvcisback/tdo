@@ -514,6 +514,42 @@ class SqliteTaskCache:
             rows = await cursor.fetchall()
         return [self._build_task(row) for row in rows]
 
+    async def list_unprioritized_tasks(
+        self,
+        *,
+        task_filter: TaskFilter | None = None,
+    ) -> list[Task]:
+        """List active tasks with no priority set.
+
+        Excludes waiting tasks (same as list_active_tasks).
+        """
+        assert self._conn is not None
+        now_utc = time.time()
+        conditions: list[str] = [
+            "priority IS NULL",
+            "(wait_utc IS NULL OR wait_utc <= ?)",
+        ]
+        params: list[float | str] = [now_utc]
+
+        if task_filter:
+            if task_filter.project:
+                conditions.append("json_extract(x_properties, '$.X-PROJECT') = ?")
+                params.append(task_filter.project)
+            for tag in task_filter.tags:
+                conditions.append("categories LIKE ?")
+                params.append(f'%"{tag}"%')
+            if task_filter.indices:
+                placeholders = ",".join("?" for _ in task_filter.indices)
+                conditions.append(f"task_index IN ({placeholders})")
+                params.extend(str(i) for i in task_filter.indices)
+
+        where_clause = " WHERE " + " AND ".join(conditions)
+        query = f"SELECT * FROM tasks{where_clause} ORDER BY due_utc IS NULL, due_utc"
+
+        async with self._conn.execute(query, params) as cursor:
+            rows = await cursor.fetchall()
+        return [self._build_task(row) for row in rows]
+
     async def list_waiting_tasks(
         self,
         *,
