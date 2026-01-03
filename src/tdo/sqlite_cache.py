@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Sequence
 
 import aiosqlite
 
-from .models import Task, TaskData, TaskFilter
+from .models import Attachment, Task, TaskData, TaskFilter
 
 if TYPE_CHECKING:
     from .diff import TaskSetDiff
@@ -37,6 +37,28 @@ def _serialize_properties(value: Sequence[str] | None) -> str:
 
 def _serialize_map(value: dict[str, str] | None) -> str:
     return json.dumps(value or {})
+
+
+def _serialize_attachments(attachments: list[Attachment] | None) -> str:
+    if not attachments:
+        return "[]"
+    return json.dumps([{"uri": a.uri, "fmttype": a.fmttype} for a in attachments])
+
+
+def _parse_attachments(raw: str | None) -> list[Attachment]:
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [
+        Attachment(uri=item.get("uri", ""), fmttype=item.get("fmttype"))
+        for item in payload
+        if isinstance(item, dict)
+    ]
 
 
 def _parse_json(raw: str | None) -> dict[str, str]:
@@ -130,6 +152,8 @@ class SqliteTaskCache:
             priority INTEGER,
             x_properties TEXT,
             categories TEXT,
+            url TEXT,
+            attachments TEXT,
             href TEXT,
             pending_action TEXT,
             last_synced REAL,
@@ -154,6 +178,8 @@ class SqliteTaskCache:
             priority INTEGER,
             x_properties TEXT,
             categories TEXT,
+            url TEXT,
+            attachments TEXT,
             href TEXT,
             pending_action TEXT,
             last_synced REAL,
@@ -174,6 +200,8 @@ class SqliteTaskCache:
             priority INTEGER,
             x_properties TEXT,
             categories TEXT,
+            url TEXT,
+            attachments TEXT,
             href TEXT,
             last_synced REAL,
             deleted_at REAL NOT NULL,
@@ -221,6 +249,16 @@ class SqliteTaskCache:
             await self._conn.execute("ALTER TABLE deleted_tasks ADD COLUMN wait_utc REAL")
             await self._conn.commit()
             await self._backfill_utc_columns()
+
+        # Migration: add url and attachments columns
+        if "url" not in columns:
+            await self._conn.execute("ALTER TABLE tasks ADD COLUMN url TEXT")
+            await self._conn.execute("ALTER TABLE tasks ADD COLUMN attachments TEXT")
+            await self._conn.execute("ALTER TABLE completed_tasks ADD COLUMN url TEXT")
+            await self._conn.execute("ALTER TABLE completed_tasks ADD COLUMN attachments TEXT")
+            await self._conn.execute("ALTER TABLE deleted_tasks ADD COLUMN url TEXT")
+            await self._conn.execute("ALTER TABLE deleted_tasks ADD COLUMN attachments TEXT")
+            await self._conn.commit()
 
     async def _migrate_to_three_tables(self) -> None:
         """Migrate from single tasks table with deleted flag to three tables."""
@@ -670,6 +708,8 @@ class SqliteTaskCache:
         priority = task.data.priority
         x_props = _serialize_map(task.data.x_properties)
         categories = _serialize_properties(task.data.categories)
+        url = task.data.url
+        attachments = _serialize_attachments(task.data.attachments)
         href = task.href
         assert self._conn is not None
         async with self._conn.execute(
@@ -700,12 +740,14 @@ class SqliteTaskCache:
                 priority,
                 x_properties,
                 categories,
+                url,
+                attachments,
                 href,
                 pending_action,
                 last_synced,
                 updated_at,
                 task_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(uid) DO UPDATE SET
                 summary = excluded.summary,
                 status = excluded.status,
@@ -716,6 +758,8 @@ class SqliteTaskCache:
                 priority = excluded.priority,
                 x_properties = excluded.x_properties,
                 categories = excluded.categories,
+                url = excluded.url,
+                attachments = excluded.attachments,
                 href = excluded.href,
                 pending_action = ?,
                 last_synced = ?,
@@ -733,6 +777,8 @@ class SqliteTaskCache:
                 priority,
                 x_props,
                 categories,
+                url,
+                attachments,
                 href,
                 resolved_pending,
                 resolved_last_synced,
@@ -763,6 +809,8 @@ class SqliteTaskCache:
         priority = task.data.priority
         x_props = _serialize_map(task.data.x_properties)
         categories = _serialize_properties(task.data.categories)
+        url = task.data.url
+        attachments = _serialize_attachments(task.data.attachments)
         href = task.href
         now = time.time()
         assert self._conn is not None
@@ -779,13 +827,15 @@ class SqliteTaskCache:
                 priority,
                 x_properties,
                 categories,
+                url,
+                attachments,
                 href,
                 pending_action,
                 last_synced,
                 updated_at,
                 completed_at,
                 task_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(uid) DO UPDATE SET
                 summary = excluded.summary,
                 status = excluded.status,
@@ -796,6 +846,8 @@ class SqliteTaskCache:
                 priority = excluded.priority,
                 x_properties = excluded.x_properties,
                 categories = excluded.categories,
+                url = excluded.url,
+                attachments = excluded.attachments,
                 href = excluded.href,
                 pending_action = excluded.pending_action,
                 last_synced = excluded.last_synced,
@@ -814,6 +866,8 @@ class SqliteTaskCache:
                 priority,
                 x_props,
                 categories,
+                url,
+                attachments,
                 href,
                 pending_action,
                 last_synced,
@@ -841,6 +895,8 @@ class SqliteTaskCache:
         priority = task.data.priority
         x_props = _serialize_map(task.data.x_properties)
         categories = _serialize_properties(task.data.categories)
+        url = task.data.url
+        attachments = _serialize_attachments(task.data.attachments)
         assert self._conn is not None
         await self._conn.execute(
             """
@@ -855,11 +911,13 @@ class SqliteTaskCache:
                 priority,
                 x_properties,
                 categories,
+                url,
+                attachments,
                 href,
                 last_synced,
                 deleted_at,
                 task_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(uid) DO UPDATE SET
                 summary = excluded.summary,
                 status = excluded.status,
@@ -870,6 +928,8 @@ class SqliteTaskCache:
                 priority = excluded.priority,
                 x_properties = excluded.x_properties,
                 categories = excluded.categories,
+                url = excluded.url,
+                attachments = excluded.attachments,
                 href = excluded.href,
                 last_synced = excluded.last_synced,
                 deleted_at = excluded.deleted_at,
@@ -886,6 +946,8 @@ class SqliteTaskCache:
                 priority,
                 x_props,
                 categories,
+                url,
+                attachments,
                 task.href,
                 None,  # last_synced
                 deleted_at,
@@ -1213,6 +1275,8 @@ class SqliteTaskCache:
                 priority=row["priority"],
                 x_properties=_parse_json(row["x_properties"]),
                 categories=_parse_list(row["categories"]),
+                url=row["url"],
+                attachments=_parse_attachments(row["attachments"]),
             ),
             href=row["href"],
             task_index=row["task_index"],
@@ -1244,6 +1308,8 @@ class SqliteTaskCache:
                 priority=row["priority"],
                 x_properties=_parse_json(row["x_properties"]),
                 categories=_parse_list(row["categories"]),
+                url=row["url"],
+                attachments=_parse_attachments(row["attachments"]),
             ),
             href=row["href"],
             task_index=row["task_index"],
@@ -1275,6 +1341,8 @@ class SqliteTaskCache:
                 priority=row["priority"],
                 x_properties=_parse_json(row["x_properties"]),
                 categories=_parse_list(row["categories"]),
+                url=row["url"],
+                attachments=_parse_attachments(row["attachments"]),
             ),
             href=None,  # deleted_tasks doesn't have href
             task_index=row["task_index"],

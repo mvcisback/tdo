@@ -21,7 +21,7 @@ from .config import (
     write_config_file,
 )
 from .diff import TaskDiff, TaskSetDiff
-from .models import Task, TaskData, TaskFilter, TaskPatch, TaskPayload
+from .models import Attachment, Task, TaskData, TaskFilter, TaskPatch, TaskPayload
 from .time_parser import parse_due_value
 from .update_descriptor import UpdateDescriptor
 from .update_linear_parser import parse_update
@@ -113,6 +113,8 @@ def _has_changes(patch: TaskData) -> bool:
         or patch.wait is not None
         or patch.x_properties
         or patch.categories is not None
+        or patch.url is not None
+        or patch.attachments
     )
 
 
@@ -161,6 +163,7 @@ def _has_update_candidates(descriptor: UpdateDescriptor) -> bool:
         or add.wait is not None  # Empty string means "unset"
         or add.categories
         or remove.categories
+        or add.url is not None  # Empty string means "unset"
     )
 
 
@@ -186,6 +189,7 @@ def _build_payload(descriptor: UpdateDescriptor) -> TaskPayload:
         status=add.status or "NEEDS-ACTION",
         x_properties=x_properties,
         categories=categories if categories else None,
+        url=add.url if add.url else None,
     )
 
 
@@ -208,6 +212,7 @@ def _build_patch_from_descriptor(
         due=due,
         wait=wait,
         status=add.status,
+        url=add.url,  # Empty string signals "unset", None = no change
     )
     x_properties = dict(add.x_properties)
     raw_categories = x_properties.pop("CATEGORIES", None)
@@ -785,6 +790,15 @@ def _format_task_detail(task: Task) -> str:
     if project:
         lines.append(f"Project:     {project}")
 
+    if task.data.url:
+        lines.append(f"URL:         {task.data.url}")
+
+    if task.data.attachments:
+        lines.append(f"Attachments: {len(task.data.attachments)}")
+        for i, attach in enumerate(task.data.attachments, 1):
+            fmttype_display = f" ({attach.fmttype})" if attach.fmttype else ""
+            lines.append(f"  [{i}] {attach.uri}{fmttype_display}")
+
     for key, value in task.data.x_properties.items():
         if key != "X-PROJECT":
             lines.append(f"{key}: {value}")
@@ -809,6 +823,85 @@ async def _handle_show(args: argparse.Namespace) -> None:
             if i > 0:
                 print()
             print(_format_task_detail(task))
+    finally:
+        await client.close()
+
+
+async def _handle_attach(args: argparse.Namespace) -> None:
+    """Add, remove, or list attachments on a task."""
+    client = await _cache_client(args.env)
+    try:
+        tasks = _select_tasks_for_filter(
+            await _sorted_tasks(client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            _exit_with_message("no tasks match filter")
+        if len(tasks) > 1:
+            _exit_with_message("attach command requires exactly one task")
+
+        task = tasks[0]
+
+        # List mode
+        if args.list_only:
+            if not task.data.attachments:
+                print("No attachments")
+            else:
+                print(f"Attachments ({len(task.data.attachments)}):")
+                for i, attach in enumerate(task.data.attachments, 1):
+                    fmttype_display = f" ({attach.fmttype})" if attach.fmttype else ""
+                    print(f"  [{i}] {attach.uri}{fmttype_display}")
+            return
+
+        # Require URL for add/remove
+        if not args.url:
+            _exit_with_message("attach command requires a URL argument")
+
+        # Remove mode
+        if args.remove:
+            existing_attachments = list(task.data.attachments)
+            new_attachments = [a for a in existing_attachments if a.uri != args.url]
+            if len(new_attachments) == len(existing_attachments):
+                _exit_with_message(f"attachment not found: {args.url}")
+            # Create a new task with filtered attachments
+            updated_data = TaskData(
+                summary=task.data.summary,
+                status=task.data.status,
+                due=task.data.due,
+                wait=task.data.wait,
+                priority=task.data.priority,
+                x_properties=task.data.x_properties,
+                categories=task.data.categories,
+                url=task.data.url,
+                attachments=new_attachments,
+            )
+            updated = Task(
+                uid=task.uid,
+                data=updated_data,
+                href=task.href,
+                task_index=task.task_index,
+            )
+            pending_action = await client.cache.get_pending_action(task.uid) if client.cache else None
+            action = "create" if pending_action == "create" else "update"
+            await client.cache.upsert_task(updated, pending_action=action)
+            diff = TaskDiff(pre=task.data, post=updated.data)
+            print(TaskSetDiff(diffs={task.task_index: diff}).pretty())
+        else:
+            # Add mode
+            new_attachment = Attachment(uri=args.url, fmttype=args.fmttype)
+            patch = TaskPatch(attachments=[new_attachment])
+            updated = await client.modify_task(task, patch)
+            diff = TaskDiff(pre=task.data, post=updated.data)
+            print(TaskSetDiff(diffs={task.task_index: diff}).pretty())
+
+        # Log transaction
+        if client.cache:
+            uid_diff = TaskSetDiff(diffs={task.uid: diff})
+            await client.cache.log_transaction(
+                uid_diff,
+                operation="attach",
+                max_entries=client.config.cache.transaction_log_size,
+            )
     finally:
         await client.close()
 
@@ -991,6 +1084,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     undo_parser = subparsers.add_parser("undo")
     undo_parser.set_defaults(func=_handle_undo)
+
+    attach_parser = subparsers.add_parser("attach")
+    attach_parser.add_argument("url", nargs="?", help="attachment URL")
+    attach_parser.add_argument("--fmttype", dest="fmttype", help="MIME type for attachment")
+    attach_parser.add_argument("--remove", dest="remove", action="store_true", help="remove attachment")
+    attach_parser.add_argument("--list", dest="list_only", action="store_true", help="list attachments")
+    attach_parser.set_defaults(func=_handle_attach)
 
     config_parser = subparsers.add_parser("config")
     config_parser.set_defaults(func=_handle_config_help, parser=config_parser)

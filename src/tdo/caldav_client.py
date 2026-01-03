@@ -12,7 +12,7 @@ import arrow
 
 from .config import CaldavConfig
 from .diff import TaskDiff, TaskSetDiff
-from .models import Task, TaskData, TaskPatch, TaskPayload
+from .models import Attachment, Task, TaskData, TaskPatch, TaskPayload
 from .sqlite_cache import SqliteTaskCache
 
 if TYPE_CHECKING:
@@ -149,6 +149,7 @@ class CalDAVClient:
     async def create_task(self, payload: TaskPayload) -> Task:
         uid = self._uid_from_summary(payload.summary)
         categories = list(payload.categories) if payload.categories else []
+        attachments = list(payload.attachments) if payload.attachments else []
         task = Task(
             uid=uid,
             data=TaskData(
@@ -159,6 +160,8 @@ class CalDAVClient:
                 priority=payload.priority,
                 x_properties=dict(payload.x_properties),
                 categories=categories,
+                url=payload.url,
+                attachments=attachments,
             ),
         )
         cache = self._ensure_cache()
@@ -217,6 +220,17 @@ class CalDAVClient:
         x_properties = {k: v for k, v in x_properties.items() if v}
         categories = patch.categories if patch.categories is not None else task.data.categories
         categories = list(categories or [])
+        # Handle URL: empty string = unset, None = no change
+        if patch.url == "":
+            url = None
+        elif patch.url is not None:
+            url = patch.url
+        else:
+            url = task.data.url
+        # Handle attachments: additive by default
+        attachments = list(task.data.attachments)
+        if patch.attachments:
+            attachments.extend(patch.attachments)
         return Task(
             uid=task.uid,
             data=TaskData(
@@ -227,6 +241,8 @@ class CalDAVClient:
                 priority=priority,
                 x_properties=x_properties,
                 categories=categories,
+                url=url,
+                attachments=attachments,
             ),
             href=task.href,
             task_index=task.task_index,
@@ -376,13 +392,26 @@ class CalDAVClient:
             task.data.categories,
             task.uid,
             task.data.status,
+            task.data.url,
+            task.data.attachments,
         )
         todo = calendar.add_todo(body)
         return self._task_from_resource(todo)
 
     def _push_update(self, task: Task, calendar: "Calendar") -> Task:
         summary = task.data.summary or task.uid
-        body = self._build_ics(summary, task.data.due, task.data.wait, task.data.priority, task.data.x_properties, task.data.categories, task.uid, task.data.status)
+        body = self._build_ics(
+            summary,
+            task.data.due,
+            task.data.wait,
+            task.data.priority,
+            task.data.x_properties,
+            task.data.categories,
+            task.uid,
+            task.data.status,
+            task.data.url,
+            task.data.attachments,
+        )
         resource = self._resource_for_update(task, calendar)
         resource.id = task.uid
         resource.data = body
@@ -420,6 +449,8 @@ class CalDAVClient:
         categories: list[str] | None,
         uid: str,
         status: str | None,
+        url: str | None = None,
+        attachments: list[Attachment] | None = None,
     ) -> str:
         lines = [
             "BEGIN:VCALENDAR",
@@ -439,6 +470,13 @@ class CalDAVClient:
             lines.append(f"DTSTART:{self._format_due(wait)}")
         if categories:
             lines.append(f"CATEGORIES:{','.join(categories)}")
+        if url:
+            lines.append(f"URL:{url}")
+        for attach in attachments or []:
+            if attach.fmttype:
+                lines.append(f"ATTACH;FMTTYPE={attach.fmttype}:{attach.uri}")
+            else:
+                lines.append(f"ATTACH:{attach.uri}")
         for name, value in x_properties.items():
             lines.append(f"{name}:{value}")
         lines.extend(["END:VTODO", "END:VCALENDAR"])
@@ -456,6 +494,8 @@ class CalDAVClient:
         x_properties: Dict[str, str] = {}
         uid = ""
         categories: list[str] = []
+        url: str | None = None
+        attachments: list[Attachment] = []
         for raw in data.splitlines():
             line = raw.strip()
             if not line or ":" not in line:
@@ -482,6 +522,11 @@ class CalDAVClient:
                 status = value
             elif key == "CATEGORIES":
                 categories.extend(self._split_categories(value))
+            elif key == "URL":
+                url = value
+            elif key == "ATTACH" or key.startswith("ATTACH;"):
+                fmttype = self._extract_fmttype(key)
+                attachments.append(Attachment(uri=value, fmttype=fmttype))
             elif key.startswith("X-"):
                 x_properties[key] = value
         return Task(
@@ -494,6 +539,8 @@ class CalDAVClient:
                 priority=priority,
                 x_properties=x_properties,
                 categories=categories,
+                url=url,
+                attachments=attachments,
             ),
         )
 
@@ -504,6 +551,15 @@ class CalDAVClient:
         for param in key.split(";")[1:]:
             if param.startswith("TZID="):
                 return param[5:]
+        return None
+
+    def _extract_fmttype(self, key: str) -> str | None:
+        """Extract FMTTYPE from a property key like 'ATTACH;FMTTYPE=application/pdf'."""
+        if ";" not in key:
+            return None
+        for param in key.split(";")[1:]:
+            if param.startswith("FMTTYPE="):
+                return param[8:]  # len("FMTTYPE=") = 8
         return None
 
     def _parse_due(self, raw: str, tzid: str | None = None) -> datetime | None:

@@ -9,6 +9,21 @@ T = TypeVar("T")
 
 
 @dataclass
+class Attachment:
+    """Represents a CalDAV ATTACH property."""
+
+    uri: str
+    fmttype: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"uri": self.uri, "fmttype": self.fmttype}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Attachment:
+        return cls(uri=data["uri"], fmttype=data.get("fmttype"))
+
+
+@dataclass
 class TaskData(Generic[T]):
     summary: str | None = None
     status: str | None = None
@@ -17,6 +32,8 @@ class TaskData(Generic[T]):
     priority: Optional[int] = None
     x_properties: Dict[str, str] = field(default_factory=dict)
     categories: list[str] | None = None
+    url: str | None = None
+    attachments: list[Attachment] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize TaskData to a JSON-compatible dict."""
@@ -36,6 +53,8 @@ class TaskData(Generic[T]):
             "priority": self.priority,
             "x_properties": dict(self.x_properties) if self.x_properties else {},
             "categories": list(self.categories) if self.categories else None,
+            "url": self.url,
+            "attachments": [a.to_dict() for a in self.attachments],
         }
 
     @classmethod
@@ -43,6 +62,7 @@ class TaskData(Generic[T]):
         """Deserialize TaskData from a dict."""
         due = data.get("due")
         wait = data.get("wait")
+        attachments_raw = data.get("attachments") or []
         return cls(
             summary=data.get("summary"),
             status=data.get("status"),
@@ -51,6 +71,8 @@ class TaskData(Generic[T]):
             priority=data.get("priority"),
             x_properties=data.get("x_properties") or {},
             categories=data.get("categories"),
+            url=data.get("url"),
+            attachments=[Attachment.from_dict(a) for a in attachments_raw],
         )
 
 

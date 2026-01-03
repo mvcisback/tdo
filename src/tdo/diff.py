@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, Generic, Mapping, Sequence, TypeVar
 
-from .models import Task, TaskData
+from .models import Attachment, Task, TaskData
 
 if TYPE_CHECKING:
     from .sqlite_cache import SqliteTaskCache
@@ -224,8 +224,8 @@ class TaskSetDiff(Generic[K]):
                 # Determine target table based on status
                 if post.status == "COMPLETED":
                     sql = """
-                        INSERT INTO completed_tasks (uid, summary, status, due, wait, due_utc, wait_utc, priority, x_properties, categories, updated_at, completed_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO completed_tasks (uid, summary, status, due, wait, due_utc, wait_utc, priority, x_properties, categories, url, attachments, updated_at, completed_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(uid) DO UPDATE SET
                             summary = excluded.summary,
                             status = excluded.status,
@@ -236,6 +236,8 @@ class TaskSetDiff(Generic[K]):
                             priority = excluded.priority,
                             x_properties = excluded.x_properties,
                             categories = excluded.categories,
+                            url = excluded.url,
+                            attachments = excluded.attachments,
                             updated_at = excluded.updated_at,
                             completed_at = excluded.completed_at
                     """
@@ -251,13 +253,15 @@ class TaskSetDiff(Generic[K]):
                         post.priority,
                         _serialize_map(post.x_properties),
                         _serialize_list(post.categories),
+                        post.url,
+                        _serialize_attachments(post.attachments),
                         now,
                         now,  # completed_at
                     )
                 else:
                     sql = """
-                        INSERT INTO tasks (uid, summary, status, due, wait, due_utc, wait_utc, priority, x_properties, categories, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO tasks (uid, summary, status, due, wait, due_utc, wait_utc, priority, x_properties, categories, url, attachments, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(uid) DO UPDATE SET
                             summary = excluded.summary,
                             status = excluded.status,
@@ -268,6 +272,8 @@ class TaskSetDiff(Generic[K]):
                             priority = excluded.priority,
                             x_properties = excluded.x_properties,
                             categories = excluded.categories,
+                            url = excluded.url,
+                            attachments = excluded.attachments,
                             updated_at = excluded.updated_at
                     """
                     params = (
@@ -281,6 +287,8 @@ class TaskSetDiff(Generic[K]):
                         post.priority,
                         _serialize_map(post.x_properties),
                         _serialize_list(post.categories),
+                        post.url,
+                        _serialize_attachments(post.attachments),
                         datetime.now().timestamp(),
                     )
                 statements.append((sql.strip(), params))
@@ -299,6 +307,8 @@ class TaskSetDiff(Generic[K]):
                         priority = ?,
                         x_properties = ?,
                         categories = ?,
+                        url = ?,
+                        attachments = ?,
                         updated_at = ?
                     WHERE uid = ?
                 """
@@ -312,6 +322,8 @@ class TaskSetDiff(Generic[K]):
                     post.priority,
                     _serialize_map(post.x_properties),
                     _serialize_list(post.categories),
+                    post.url,
+                    _serialize_attachments(post.attachments),
                     datetime.now().timestamp(),
                     uid,
                 )
@@ -448,6 +460,13 @@ def _serialize_map(value: dict[str, str] | None) -> str:
 def _serialize_list(value: list[str] | None) -> str:
     """Serialize a list to JSON string."""
     return json.dumps(list(value or []))
+
+
+def _serialize_attachments(attachments: list[Attachment] | None) -> str:
+    """Serialize attachments to JSON string."""
+    if not attachments:
+        return "[]"
+    return json.dumps([{"uri": a.uri, "fmttype": a.fmttype} for a in attachments])
 
 
 def _to_utc_timestamp(dt: datetime | None) -> float | None:

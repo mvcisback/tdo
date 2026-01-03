@@ -33,6 +33,7 @@ def parse_update(raw: str) -> UpdateDescriptor:
     priority: int | None = None
     status: str | None = None
     summary: str | None = None
+    url: str | None = None
     x_properties: dict[str, str] = {}
 
     for token in tokens:
@@ -77,6 +78,9 @@ def parse_update(raw: str) -> UpdateDescriptor:
                 prop_key, prop_value = rest.split(":", 1)
                 x_properties[prop_key] = prop_value
                 continue
+            if key_lower == "url":
+                url = rest  # Empty string signals "unset"
+                continue
 
         # Description word
         description_parts.append(token)
@@ -99,6 +103,7 @@ def parse_update(raw: str) -> UpdateDescriptor:
         priority=priority,
         x_properties=x_properties,
         categories=list(addition_set) if addition_set else None,
+        url=url,
     )
 
     remove_data: TaskData[str] = TaskData(
