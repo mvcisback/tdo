@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -98,6 +99,7 @@ class SqliteTaskCache:
         resolved.parent.mkdir(parents=True, exist_ok=True)
         self.path = resolved
         self._conn: aiosqlite.Connection | None = None
+        self._index_lock = asyncio.Lock()
 
     @classmethod
     async def create(cls, path: Path | None = None, *, env: str = "default") -> SqliteTaskCache:
@@ -419,15 +421,20 @@ class SqliteTaskCache:
         return indices[-1] + 1
 
     async def assign_index(self, uid: str) -> int:
-        """Assign next available index to a task."""
-        index = await self._next_available_index()
-        assert self._conn is not None
-        await self._conn.execute(
-            "UPDATE tasks SET task_index = ? WHERE uid = ?",
-            (index, uid)
-        )
-        await self._conn.commit()
-        return index
+        """Assign next available index to a task.
+
+        Uses a lock to prevent race conditions when multiple
+        tasks are assigned indices concurrently.
+        """
+        async with self._index_lock:
+            index = await self._next_available_index()
+            assert self._conn is not None
+            await self._conn.execute(
+                "UPDATE tasks SET task_index = ? WHERE uid = ?",
+                (index, uid)
+            )
+            await self._conn.commit()
+            return index
 
     async def get_task_by_index(self, index: int) -> Task | None:
         """Get active task by its stable index."""
