@@ -320,7 +320,7 @@ def _format_due_date(due: datetime | None) -> str:
 
 
 def _pretty_print_tasks(
-    tasks: list[Task], show_uids: bool, *, title: str | None = None
+    tasks: list[Task], show_uids: bool, *, title: str | None = None, reverse: bool = False
 ) -> None:
     console = Console(file=sys.stdout, color_system="auto")
     table = Table(
@@ -338,7 +338,7 @@ def _pretty_print_tasks(
     column_lengths: dict[str, int] = {spec.name: len(spec.name) for spec in column_specs}
     rows: list[list[str]] = []
     now = datetime.now()
-    sorted_tasks = sorted(tasks, key=_task_sort_key)
+    sorted_tasks = sorted(tasks, key=_task_sort_key, reverse=reverse)
     for task in sorted_tasks:
         due_label = _format_due_label(task.data.due, now)
         project = _format_project(task)
@@ -740,19 +740,22 @@ async def _handle_list(args: argparse.Namespace) -> None:
         # Split tasks by status: IN-PROCESS (started) and NEEDS-ACTION (backlog)
         started = [t for t in active_tasks if t.data.status == "IN-PROCESS"]
         backlog = [t for t in active_tasks if t.data.status == "NEEDS-ACTION"]
-
-        if started:
-            _pretty_print_tasks(started, config.show_uids, title="Started")
-        if backlog:
-            if started:
-                print()  # Blank line between tables
-            _pretty_print_tasks(backlog, config.show_uids, title="Backlog")
-        # Handle tasks with other statuses (if any)
         other = [t for t in active_tasks if t.data.status not in ("IN-PROCESS", "NEEDS-ACTION", "COMPLETED")]
+
+        reverse = not getattr(args, "no_reverse", False)
+
+        # Display order: Backlog first, then Started (so Started appears at bottom)
+        if backlog:
+            _pretty_print_tasks(backlog, config.show_uids, title="Backlog", reverse=reverse)
+        if started:
+            if backlog:
+                print()  # Blank line between tables
+            _pretty_print_tasks(started, config.show_uids, title="Started", reverse=reverse)
+        # Handle tasks with other statuses (if any)
         if other:
             if started or backlog:
                 print()
-            _pretty_print_tasks(other, config.show_uids, title="Other")
+            _pretty_print_tasks(other, config.show_uids, title="Other", reverse=reverse)
     finally:
         await client.close()
 
@@ -1123,6 +1126,12 @@ def _build_parser() -> argparse.ArgumentParser:
     delete_parser.set_defaults(func=_handle_delete)
 
     list_parser = subparsers.add_parser("list")
+    list_parser.add_argument(
+        "--no-reverse",
+        action="store_true",
+        dest="no_reverse",
+        help="disable reversed sort order (highest priority at top)",
+    )
     list_parser.set_defaults(func=_handle_list)
 
     waiting_parser = subparsers.add_parser("waiting")
