@@ -19,6 +19,7 @@ from .config import (
     config_file_path,
     load_config,
     load_config_from_path,
+    resolve_env,
     write_config_file,
 )
 from .diff import TaskDiff, TaskSetDiff
@@ -380,7 +381,7 @@ def _pretty_print_tasks(
     console.print(table)
 
 
-_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "prioritize", "pull", "push", "show", "start", "stop", "sync", "undo"}
+_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "move", "prioritize", "pull", "push", "show", "start", "stop", "sync", "undo"}
 
 
 def _looks_like_index_filter(value: str) -> bool:
@@ -967,6 +968,113 @@ async def _handle_prioritize(args: argparse.Namespace) -> None:
         await client.close()
 
 
+async def _handle_move(args: argparse.Namespace) -> None:
+    """Move tasks from current environment to destination environment."""
+    from .caldav_client import CalDAVClient
+
+    dest_env = args.dest_env
+    source_env = args.env
+
+    # Validate source != destination
+    source_resolved = resolve_env(source_env)
+    if source_resolved == dest_env:
+        _exit_with_message(f"cannot move tasks to the same environment: {dest_env}")
+
+    # Validate destination environment config exists
+    try:
+        dest_config = load_config(dest_env)
+    except (RuntimeError, FileNotFoundError) as e:
+        _exit_with_message(f"destination environment '{dest_env}' not configured: {e}")
+
+    # Get source client
+    source_client = await _cache_client(source_env)
+
+    # Get destination client
+    dest_client = await CalDAVClient.create(dest_config)
+
+    try:
+        # Select tasks from source
+        tasks = _select_tasks_for_filter(
+            await _sorted_tasks(source_client),
+            _effective_filter_indices(args.filter_indices),
+        )
+        if not tasks:
+            _exit_with_message("no tasks match filter")
+
+        # Build index to uid mapping for source
+        index_to_uid: dict[int, str] = {
+            t.task_index: t.uid for t in tasks if t.task_index is not None
+        }
+
+        # Track diffs for transaction logging
+        source_diffs: dict[int, TaskDiff] = {}
+        dest_diffs: dict[int, TaskDiff] = {}
+        moved_tasks: list[tuple[Task, Task]] = []  # (source, dest) pairs
+
+        for task in tasks:
+            # Create payload for destination from source task data
+            payload = TaskPayload(
+                summary=task.data.summary,
+                status=task.data.status,
+                due=task.data.due,
+                wait=task.data.wait,
+                priority=task.data.priority,
+                x_properties=dict(task.data.x_properties),
+                categories=list(task.data.categories) if task.data.categories else None,
+                url=task.data.url,
+                attachments=list(task.data.attachments),
+            )
+
+            # Create in destination (gets new UID and index)
+            dest_task = await dest_client.create_task(payload)
+
+            # Mark for deletion in source
+            await source_client.delete_task(task.uid)
+
+            # Record diffs
+            if task.task_index is not None:
+                source_diffs[task.task_index] = TaskDiff(pre=task.data, post=None)
+            if dest_task.task_index is not None:
+                dest_diffs[dest_task.task_index] = TaskDiff(pre=None, post=dest_task.data)
+            moved_tasks.append((task, dest_task))
+
+        # Display results
+        print(f"Moved {len(moved_tasks)} task(s) from '{source_resolved}' to '{dest_env}':")
+        for src, dst in moved_tasks:
+            print(f"  [{src.task_index}] {src.data.summary} -> [{dst.task_index}] in {dest_env}")
+
+        # Log transaction for source environment
+        if source_client.cache and source_diffs:
+            source_uid_diff = TaskSetDiff(diffs=source_diffs).to_uid_keyed(
+                lambda idx: index_to_uid.get(idx, str(idx))
+            )
+            await source_client.cache.log_transaction(
+                source_uid_diff,
+                operation="move-out",
+                max_entries=source_client.config.cache.transaction_log_size,
+            )
+
+        # Log transaction for destination environment
+        if dest_client.cache and dest_diffs:
+            dest_index_to_uid: dict[int, str] = {
+                dst.task_index: dst.uid
+                for _, dst in moved_tasks
+                if dst.task_index is not None
+            }
+            dest_uid_diff = TaskSetDiff(diffs=dest_diffs).to_uid_keyed(
+                lambda idx: dest_index_to_uid.get(idx, str(idx))
+            )
+            await dest_client.cache.log_transaction(
+                dest_uid_diff,
+                operation="move-in",
+                max_entries=dest_client.config.cache.transaction_log_size,
+            )
+
+    finally:
+        await source_client.close()
+        await dest_client.close()
+
+
 async def _handle_pull(args: argparse.Namespace) -> None:
     async def _pull(client: "CalDAVClient") -> None:
         result = await client.pull()
@@ -1161,6 +1269,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     prioritize_parser = subparsers.add_parser("prioritize")
     prioritize_parser.set_defaults(func=_handle_prioritize)
+
+    move_parser = subparsers.add_parser("move")
+    move_parser.add_argument("dest_env", help="destination environment name")
+    move_parser.set_defaults(func=_handle_move)
 
     config_parser = subparsers.add_parser("config")
     config_parser.set_defaults(func=_handle_config_help, parser=config_parser)

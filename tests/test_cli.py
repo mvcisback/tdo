@@ -391,3 +391,136 @@ def test_config_init_command_writes_file(tmp_path) -> None:
     assert "password = \"secret\"" in contents
     assert "token = \"tok\"" in contents
     assert "env = \"test\"" in contents
+
+
+class DestDummyClient:
+    """Separate dummy client for destination environment in move tests."""
+
+    last_payload: TaskPayload | None = None
+    _next_index: int = 100  # Start at different index than source
+
+    def __init__(self, config: CaldavConfig) -> None:
+        self.config = config
+        self.cache = None
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.last_payload = None
+        cls._next_index = 100
+
+    async def close(self) -> None:
+        pass
+
+    async def create_task(self, payload: TaskPayload) -> Task:
+        DestDummyClient.last_payload = payload
+        task_index = DestDummyClient._next_index
+        DestDummyClient._next_index += 1
+        return Task(
+            uid="dest-task",
+            data=TaskData(
+                summary=payload.summary,
+                due=payload.due,
+                priority=payload.priority,
+                x_properties=payload.x_properties,
+                categories=list(payload.categories or []),
+                url=payload.url,
+                attachments=list(payload.attachments or []),
+            ),
+            task_index=task_index,
+        )
+
+
+def test_move_command_moves_task_to_dest_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that move command creates task in dest and marks for deletion in source."""
+    DummyClient.reset()
+    DestDummyClient.reset()
+    DummyClient.list_entries = [
+        Task(
+            uid="source-task",
+            data=TaskData(summary="Task to move", due=None, priority=3, categories=["tag1"]),
+            task_index=1,
+        ),
+    ]
+
+    # Mock CalDAVClient.create for destination
+    async def mock_caldav_create(config: CaldavConfig) -> DestDummyClient:
+        return DestDummyClient(config)
+
+    from tdo import caldav_client
+
+    monkeypatch.setattr(caldav_client, "CalDAVClient", type("CalDAVClient", (), {"create": mock_caldav_create}))
+
+    exit_code, stdout = run_cli(["1", "move", "work"])
+    assert exit_code == 0
+    assert "Moved 1 task(s)" in stdout
+    assert "work" in stdout
+    # Verify task was deleted from source
+    assert "source-task" in DummyClient.deleted
+    # Verify task was created in destination with correct data
+    assert DestDummyClient.last_payload is not None
+    assert DestDummyClient.last_payload.summary == "Task to move"
+    assert DestDummyClient.last_payload.priority == 3
+    assert DestDummyClient.last_payload.categories == ["tag1"]
+
+
+def test_move_command_rejects_same_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that moving to the same environment is rejected."""
+    # Mock resolve_env to return "default"
+    monkeypatch.setattr(cli, "resolve_env", lambda env: "default")
+
+    exit_code, stdout = run_cli(["1", "move", "default"])
+    assert exit_code != 0 or "cannot move tasks to the same environment" in stdout
+
+
+def test_move_command_rejects_missing_dest_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that move fails when destination env is not configured."""
+
+    def fail_load(env: str) -> CaldavConfig:
+        if env == "nonexistent":
+            raise RuntimeError("Config not found")
+        return CaldavConfig(calendar_url="https://example.com/cal", username="tester")
+
+    monkeypatch.setattr(cli, "load_config", fail_load)
+
+    exit_code, stdout = run_cli(["1", "move", "nonexistent"])
+    assert exit_code != 0 or "not configured" in stdout
+
+
+def test_move_command_preserves_task_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that all task properties are preserved during move."""
+    DummyClient.reset()
+    DestDummyClient.reset()
+    DummyClient.list_entries = [
+        Task(
+            uid="full-task",
+            data=TaskData(
+                summary="Full task",
+                due=datetime(2025, 6, 15, 10, 0),
+                priority=1,
+                categories=["work", "urgent"],
+                x_properties={"X-PROJECT": "myproject", "X-CUSTOM": "value"},
+                url="https://example.com/task",
+            ),
+            task_index=1,
+        ),
+    ]
+
+    async def mock_caldav_create(config: CaldavConfig) -> DestDummyClient:
+        return DestDummyClient(config)
+
+    from tdo import caldav_client
+
+    monkeypatch.setattr(caldav_client, "CalDAVClient", type("CalDAVClient", (), {"create": mock_caldav_create}))
+
+    exit_code, stdout = run_cli(["1", "move", "work"])
+    assert exit_code == 0
+
+    payload = DestDummyClient.last_payload
+    assert payload is not None
+    assert payload.summary == "Full task"
+    assert payload.due == datetime(2025, 6, 15, 10, 0)
+    assert payload.priority == 1
+    assert set(payload.categories or []) == {"work", "urgent"}
+    assert payload.x_properties.get("X-PROJECT") == "myproject"
+    assert payload.x_properties.get("X-CUSTOM") == "value"
+    assert payload.url == "https://example.com/task"
