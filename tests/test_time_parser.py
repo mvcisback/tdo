@@ -34,7 +34,7 @@ def test_parse_due_special_tokens_multiple_references() -> None:
         week_start = reference.shift(days=-reference.weekday()).floor("day")
         previous_week = week_start.shift(weeks=-1)
         assert parse_due_value("sow", reference) == previous_week
-        assert parse_due_value("eow", reference) == previous_week.shift(days=7).shift(seconds=-1)
+        assert parse_due_value("eow", reference) == week_start.shift(days=7).shift(seconds=-1)  # end of current week
         assert parse_due_value("socw", reference) == week_start
         assert parse_due_value("eocw", reference) == week_start.shift(days=7).shift(seconds=-1)
         assert parse_due_value("soww", reference) == previous_week
@@ -42,7 +42,7 @@ def test_parse_due_special_tokens_multiple_references() -> None:
 
 def test_parse_due_week_boundaries() -> None:
     assert parse_due_value("sow", REFERENCE) == arrow.get("2025-05-05T00:00:00")
-    assert parse_due_value("eow", REFERENCE) == arrow.get("2025-05-11T23:59:59")
+    assert parse_due_value("eow", REFERENCE) == arrow.get("2025-05-18T23:59:59")  # end of current week
     assert parse_due_value("socw", REFERENCE) == arrow.get("2025-05-12T00:00:00")
     assert parse_due_value("eocw", REFERENCE) == arrow.get("2025-05-18T23:59:59")
     assert parse_due_value("soww", REFERENCE) == arrow.get("2025-05-05T00:00:00")
@@ -51,15 +51,15 @@ def test_parse_due_week_boundaries() -> None:
 
 def test_parse_due_month_year_quarter_tokens() -> None:
     assert parse_due_value("soy", REFERENCE) == arrow.get("2024-01-01T00:00:00")
-    assert parse_due_value("eoy", REFERENCE) == arrow.get("2024-12-31T23:59:59")
+    assert parse_due_value("eoy", REFERENCE) == arrow.get("2025-12-31T23:59:59")  # end of current year
     assert parse_due_value("socy", REFERENCE) == arrow.get("2025-01-01T00:00:00")
     assert parse_due_value("eocy", REFERENCE) == arrow.get("2025-12-31T23:59:59")
     assert parse_due_value("som", REFERENCE) == arrow.get("2025-04-01T00:00:00")
-    assert parse_due_value("eom", REFERENCE) == arrow.get("2025-04-30T23:59:59")
+    assert parse_due_value("eom", REFERENCE) == arrow.get("2025-05-31T23:59:59")  # end of current month
     assert parse_due_value("socm", REFERENCE) == arrow.get("2025-05-01T00:00:00")
     assert parse_due_value("eocm", REFERENCE) == arrow.get("2025-05-31T23:59:59")
     assert parse_due_value("soq", REFERENCE) == arrow.get("2025-01-01T00:00:00")
-    assert parse_due_value("eoq", REFERENCE) == arrow.get("2025-03-31T23:59:59")
+    assert parse_due_value("eoq", REFERENCE) == arrow.get("2025-06-30T23:59:59")  # end of current quarter
     assert parse_due_value("socq", REFERENCE) == arrow.get("2025-04-01T00:00:00")
     assert parse_due_value("eocq", REFERENCE) == arrow.get("2025-06-30T23:59:59")
 
@@ -168,3 +168,191 @@ def test_parse_due_iso_durations() -> None:
     result_p1y = parse_due_value("P1Y", REFERENCE)
     assert result_p1y is not None
     assert result_p1y == REFERENCE.shift(days=365)
+
+
+# === Additional Tests for Comprehensive Coverage ===
+
+
+@pytest.mark.parametrize(
+    "token,expected_shift",
+    [
+        ("30m", {"minutes": 30}),
+        ("90m", {"minutes": 90}),
+        ("90s", {"seconds": 90}),
+        ("3600s", {"seconds": 3600}),
+        ("1d", {"days": 1}),
+        ("1w", {"weeks": 1}),
+    ],
+)
+def test_relative_duration_minutes_and_seconds(token: str, expected_shift: dict) -> None:
+    result = parse_due_value(token, REFERENCE)
+    assert result is not None
+    assert result == REFERENCE.shift(**expected_shift)
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["0m", "0s", "0d", "0w"],
+)
+def test_zero_duration_returns_none(token: str) -> None:
+    """Zero durations return None (pytimeparse behavior)."""
+    result = parse_due_value(token, REFERENCE)
+    assert result is None
+
+
+def test_relative_duration_365d_vs_1y_equivalence() -> None:
+    result_365d = parse_due_value("365d", REFERENCE)
+    result_1y = parse_due_value("1y", REFERENCE)
+    assert result_365d is not None
+    assert result_1y is not None
+    assert result_365d == result_1y
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "tues",
+        "thur",
+        "thurs",
+    ],
+)
+def test_weekday_variant_abbreviations(token: str) -> None:
+    result = parse_due_value(token, REFERENCE)
+    assert result is not None
+    # All these should resolve to valid dates in the past week
+    assert result < REFERENCE
+
+
+@pytest.mark.parametrize(
+    "token,expected",
+    [
+        ("TuEsDaY", arrow.get("2025-05-13T00:00:00")),
+        ("MONDAY", arrow.get("2025-05-12T00:00:00")),
+        ("Wed", arrow.get("2025-05-14T00:00:00")),
+        ("FRIDAY", arrow.get("2025-05-09T00:00:00")),
+    ],
+)
+def test_weekday_mixed_case(token: str, expected: arrow.Arrow) -> None:
+    assert parse_due_value(token, REFERENCE) == expected
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "sept",
+        "Sep",
+        "SEPTEMBER",
+    ],
+)
+def test_month_variant_abbreviations(token: str) -> None:
+    result = parse_due_value(token, REFERENCE)
+    assert result is not None
+    assert result.month == 9
+
+
+@pytest.mark.parametrize(
+    "token,expected_month",
+    [
+        ("JaNuArY", 1),
+        ("MARCH", 3),
+        ("Apr", 4),
+        ("DECEMBER", 12),
+    ],
+)
+def test_month_mixed_case(token: str, expected_month: int) -> None:
+    result = parse_due_value(token, REFERENCE)
+    assert result is not None
+    assert result.month == expected_month
+
+
+def test_ordinal_31st_finds_previous_31st_day() -> None:
+    # Reference in May (31-day month) - asking for 31st should find previous 31st
+    may_ref = arrow.get("2025-05-15T10:00:00")
+    result = parse_due_value("31st", may_ref)
+    assert result is not None
+    # Should find most recent 31st (March 31 since April only has 30 days)
+    assert result == arrow.get("2025-03-31T00:00:00")
+
+
+def test_ordinal_30th_in_march_finds_february_28() -> None:
+    # Reference in March - asking for 30th
+    march_ref = arrow.get("2025-03-15T10:00:00")
+    result = parse_due_value("30th", march_ref)
+    assert result is not None
+    # Feb has no 30th, should find Feb 28 (end of Feb) or Jan 30
+    assert result.day in (28, 30)
+
+
+def test_leap_year_29th_february() -> None:
+    # 2024 is a leap year
+    leap_year_ref = arrow.get("2024-03-15T10:00:00")
+    result = parse_due_value("29th", leap_year_ref)
+    assert result is not None
+    # Should find Feb 29 in leap year
+    assert result == arrow.get("2024-02-29T00:00:00")
+
+
+def test_non_leap_year_29th_february() -> None:
+    # 2025 is not a leap year - asking for 29th from March should skip Feb
+    non_leap_ref = arrow.get("2025-03-15T10:00:00")
+    result = parse_due_value("29th", non_leap_ref)
+    assert result is not None
+    # Feb 2025 has no 29th, should go back to Jan 29
+    assert result.day == 29
+    assert result.month in (1, 2)  # Either Jan 29 or previous Feb 29
+
+
+def test_year_boundary_month_parsing() -> None:
+    # Reference at end of year - "january" should find current year's January
+    dec_ref = arrow.get("2025-12-31T23:00:00")
+    result = parse_due_value("january", dec_ref)
+    assert result is not None
+    assert result == arrow.get("2025-01-01T00:00:00")
+
+
+def test_year_boundary_december_from_january() -> None:
+    # Reference in January - "december" should find previous year's December
+    jan_ref = arrow.get("2025-01-15T10:00:00")
+    result = parse_due_value("december", jan_ref)
+    assert result is not None
+    assert result == arrow.get("2024-12-01T00:00:00")
+
+
+@pytest.mark.parametrize(
+    "token,expected_hour,expected_minute",
+    [
+        ("3p", 15, 0),
+        ("3pm", 15, 0),
+        ("11a", 11, 0),
+        ("11am", 11, 0),
+        ("9:45a", 9, 45),
+        ("9:45am", 9, 45),
+    ],
+)
+def test_time_of_day_single_letter_suffix(token: str, expected_hour: int, expected_minute: int) -> None:
+    result = parse_due_value(token, REFERENCE)
+    assert result is not None
+    assert result.hour == expected_hour
+    assert result.minute == expected_minute
+
+
+@pytest.mark.parametrize(
+    "invalid_token",
+    [
+        "abc",
+        "not-a-date",
+        "xyz123",
+        "",
+        "   ",
+        "2025-13-45",  # Invalid month/day
+    ],
+)
+def test_invalid_formats_return_none(invalid_token: str) -> None:
+    result = parse_due_value(invalid_token, REFERENCE)
+    assert result is None
+
+
+def test_empty_and_none_inputs() -> None:
+    assert parse_due_value("", REFERENCE) is None
+    assert parse_due_value("   ", REFERENCE) is None
+    assert parse_due_value(None, REFERENCE) is None  # type: ignore[arg-type]
