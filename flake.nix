@@ -46,6 +46,12 @@
         );
         venv = pythonSet.mkVirtualEnv "tdo-venv" workspace.deps.default;
         testHash = "$2b$12$.R3ZiywXe5tgoRagYudVL.hAEGyg4H40Gv0tpSLxNN4MFobFQp3Zy";
+        tdoCore = pkgs.rustPlatform.buildRustPackage {
+          pname = "tdo-core";
+          version = "0.1.0";
+          src = ./tdo-core;
+          cargoLock.lockFile = ./tdo-core/Cargo.lock;
+        };
         radicaleTest = pkgs.writeScriptBin "radicale-test" ''
 #!${pkgs.bash}/bin/bash
 set -euo pipefail
@@ -89,6 +95,9 @@ EOF
             # Install fish completions
             mkdir -p $out/share/fish/vendor_completions.d
             cp $src/completions/tdo.fish $out/share/fish/vendor_completions.d/
+
+            # Install tdo-core
+            cp ${tdoCore}/bin/tdo-core $out/bin/
           '';
         };
       in
@@ -98,12 +107,16 @@ EOF
             pkgs.commitizen
             pkgs.uv
             venv
+            pkgs.rustc
+            pkgs.cargo
+            tdoCore
           ];
           shellHook = ''
             export PYTHONPATH=${workspaceRoot}
           '';
         };
         packages.tdo = tdoApp;
+        packages.tdo-core = tdoCore;
         packages.radicaleTest = radicaleTest;
         apps.default = {
           type = "app";

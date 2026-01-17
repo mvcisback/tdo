@@ -13,3 +13,4 @@ wheels/
 
 # Temporary Radicale storage
 "$storage"/
+tdo-core/target/

@@ -44,7 +44,7 @@ end
 
 # Global options
 complete -c tdo -l version -d "Show version"
-complete -c tdo -l env -d "Environment name" -rf -a "(tdo complete envs 2>/dev/null)"
+complete -c tdo -l env -d "Environment name" -rf -a "(tdo-core complete envs 2>/dev/null)"
 
 # Commands
 complete -c tdo -n __tdo_needs_command -a add -d "Create new task"
@@ -67,22 +67,22 @@ complete -c tdo -n __tdo_needs_command -a config -d "Configuration"
 complete -c tdo -n __tdo_needs_command -a complete -d "Shell completion data"
 
 # Task index filter (before command) - only show when token starts with digit
-complete -c tdo -n "__tdo_needs_command; and __tdo_completing_filter" -a "(tdo complete tasks 2>/dev/null)"
+complete -c tdo -n "__tdo_needs_command; and __tdo_completing_filter" -a "(tdo-core complete tasks 2>/dev/null)"
 
 # Multi-index completion (e.g., "2,<TAB>" shows "2,3", "2,4", etc.)
 complete -c tdo -n "__tdo_needs_command; and __tdo_completing_comma_list" -a "(
     set -l token (commandline -ct)
     set -l prefix (string replace -r '[^,]*\$' '' -- \$token)
-    tdo complete tasks 2>/dev/null | while read -l line
+    tdo-core complete tasks 2>/dev/null | while read -l line
         echo \$prefix\$line
     end
 )"
 
 # Project filter (before command) - filter by project
-complete -c tdo -n __tdo_needs_command -a "(tdo complete projects 2>/dev/null | sed 's/^/project:/')" -d "Filter by project"
+complete -c tdo -n __tdo_needs_command -a "(tdo-core complete projects 2>/dev/null | sed 's/^/project:/')" -d "Filter by project"
 
 # Tag filter (before command) - filter by tag
-complete -c tdo -n __tdo_needs_command -a "(tdo complete tags 2>/dev/null | sed 's/^/+/')" -d "Filter by tag"
+complete -c tdo -n __tdo_needs_command -a "(tdo-core complete tags 2>/dev/null | sed 's/^/+/')" -d "Filter by tag"
 
 # list command options
 complete -c tdo -n "__tdo_using_command list" -l no-reverse -d "Don't reverse sort order"
@@ -93,7 +93,7 @@ complete -c tdo -n "__tdo_using_command attach" -l remove -d "Remove attachment"
 complete -c tdo -n "__tdo_using_command attach" -l list -d "List attachments"
 
 # move command - destination environment
-complete -c tdo -n "__tdo_using_command move" -a "(tdo complete envs 2>/dev/null)" -d "Destination environment"
+complete -c tdo -n "__tdo_using_command move" -a "(tdo-core complete envs 2>/dev/null)" -d "Destination environment"
 
 # complete command subcommands
 complete -c tdo -n "__tdo_using_command complete" -a "envs" -d "List environments"
@@ -168,10 +168,10 @@ complete -c tdo -n __tdo_add_or_modify -a "status:IN-PROCESS" -d "In process"
 complete -c tdo -n __tdo_add_or_modify -a "status:COMPLETED" -d "Completed"
 
 # Dynamic project completions
-complete -c tdo -n __tdo_add_or_modify -a "(tdo complete projects 2>/dev/null | sed 's/^/project:/')" -d "Project"
+complete -c tdo -n __tdo_add_or_modify -a "(tdo-core complete projects 2>/dev/null | sed 's/^/project:/')" -d "Project"
 
 # Dynamic tag completions (with + prefix for adding)
-complete -c tdo -n __tdo_add_or_modify -a "(tdo complete tags 2>/dev/null | sed 's/^/+/')" -d "Add tag"
+complete -c tdo -n __tdo_add_or_modify -a "(tdo-core complete tags 2>/dev/null | sed 's/^/+/')" -d "Add tag"
 
 # Dynamic tag completions (with - prefix for removing)
-complete -c tdo -n "__tdo_using_command modify" -a "(tdo complete tags 2>/dev/null | sed 's/^/-/')" -d "Remove tag"
+complete -c tdo -n "__tdo_using_command modify" -a "(tdo-core complete tags 2>/dev/null | sed 's/^/-/')" -d "Remove tag"

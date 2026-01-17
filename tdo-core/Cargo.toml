@@ -1,0 +1,17 @@
+[package]
+name = "tdo-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core backend for tdo task manager"
+
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "5.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4"] }
+
+[profile.release]
+lto = true
+strip = true
