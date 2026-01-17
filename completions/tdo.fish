@@ -57,6 +57,12 @@ complete -c tdo -n __tdo_needs_command -a complete -d "Shell completion data"
 # Task index filter (before command) - show task indices with descriptions
 complete -c tdo -n __tdo_needs_command -a "(tdo complete tasks 2>/dev/null)"
 
+# Project filter (before command) - filter by project
+complete -c tdo -n __tdo_needs_command -a "(tdo complete projects 2>/dev/null | sed 's/^/project:/')" -d "Filter by project"
+
+# Tag filter (before command) - filter by tag
+complete -c tdo -n __tdo_needs_command -a "(tdo complete tags 2>/dev/null | sed 's/^/+/')" -d "Filter by tag"
+
 # list command options
 complete -c tdo -n "__tdo_using_command list" -l no-reverse -d "Don't reverse sort order"
 
