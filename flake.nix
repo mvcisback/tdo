@@ -71,11 +71,26 @@ EOF
 export RADICALE_CONFIG="$config"
 exec ${pkgs.radicale}/bin/radicale
         '';
-        tdoApp = pkgs.writeShellScriptBin "tdo" ''
-          cd ${workspaceRoot}
-          export PYTHONPATH=${workspaceRoot}
-          exec ${venv}/bin/tdo "$@"
-        '';
+        tdoApp = pkgs.stdenv.mkDerivation {
+          pname = "tdo";
+          version = "0.9.0";
+          src = workspaceRoot;
+          dontBuild = true;
+          installPhase = ''
+            mkdir -p $out/bin
+            cat > $out/bin/tdo <<EOF
+#!/bin/sh
+cd ${workspaceRoot}
+export PYTHONPATH=${workspaceRoot}
+exec ${venv}/bin/tdo "\$@"
+EOF
+            chmod +x $out/bin/tdo
+
+            # Install fish completions
+            mkdir -p $out/share/fish/vendor_completions.d
+            cp $src/completions/tdo.fish $out/share/fish/vendor_completions.d/
+          '';
+        };
       in
       {
         devShells.default = pkgs.mkShell {

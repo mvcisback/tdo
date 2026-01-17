@@ -381,7 +381,7 @@ def _pretty_print_tasks(
     console.print(table)
 
 
-_COMMAND_NAMES = {"add", "config", "del", "do", "list", "modify", "move", "prioritize", "pull", "push", "show", "start", "stop", "sync", "undo"}
+_COMMAND_NAMES = {"add", "complete", "config", "del", "do", "list", "modify", "move", "prioritize", "pull", "push", "show", "start", "stop", "sync", "undo"}
 
 
 def _looks_like_index_filter(value: str) -> bool:
@@ -1176,6 +1176,72 @@ async def _handle_undo(args: argparse.Namespace) -> None:
         await client.close()
 
 
+async def _handle_complete(args: argparse.Namespace) -> None:
+    """Output completion data for shell autocompletion."""
+    complete_type = args.complete_type
+
+    if complete_type == "envs":
+        # List available environment names from config files
+        config_home = Path.home() / ".config" / "tdo"
+        if config_home.exists():
+            for f in config_home.glob("config.*.toml"):
+                # Extract env name from config.<env>.toml
+                name = f.stem  # config.<env>
+                if name.startswith("config."):
+                    env_name = name[7:]  # Remove "config." prefix
+                    print(env_name)
+
+    elif complete_type == "tasks":
+        # List task indices with summaries
+        try:
+            client = await _cache_client(args.env)
+            try:
+                tasks = await client.list_active_tasks(exclude_waiting=False)
+                for task in tasks:
+                    if task.task_index is not None:
+                        summary = (task.data.summary or "")[:50]
+                        print(f"{task.task_index}\t{summary}")
+            finally:
+                await client.close()
+        except Exception:
+            pass  # Silently fail for completions
+
+    elif complete_type == "projects":
+        # List unique project names
+        try:
+            client = await _cache_client(args.env)
+            try:
+                tasks = await client.list_active_tasks(exclude_waiting=False)
+                projects: set[str] = set()
+                for task in tasks:
+                    proj = task.data.x_properties.get("X-PROJECT")
+                    if proj:
+                        projects.add(proj)
+                for proj in sorted(projects):
+                    print(proj)
+            finally:
+                await client.close()
+        except Exception:
+            pass
+
+    elif complete_type == "tags":
+        # List unique tag names
+        try:
+            client = await _cache_client(args.env)
+            try:
+                tasks = await client.list_active_tasks(exclude_waiting=False)
+                tags: set[str] = set()
+                for task in tasks:
+                    if task.data.categories:
+                        tags.update(task.data.categories)
+                for tag in sorted(tags):
+                    print(tag)
+            finally:
+                await client.close()
+        except Exception:
+            pass
+
+
 def _handle_config_init(args: argparse.Namespace) -> None:
     target = config_file_path(args.env, args.config_home)
     calendar_url_value = _require_value(args.calendar_url, "CalDAV calendar URL")
@@ -1273,6 +1339,10 @@ def _build_parser() -> argparse.ArgumentParser:
     move_parser = subparsers.add_parser("move")
     move_parser.add_argument("dest_env", help="destination environment name")
     move_parser.set_defaults(func=_handle_move)
+
+    complete_parser = subparsers.add_parser("complete", help="output completion data for shell autocompletion")
+    complete_parser.add_argument("complete_type", choices=["envs", "tasks", "projects", "tags"], help="type of completion data")
+    complete_parser.set_defaults(func=_handle_complete)
 
     config_parser = subparsers.add_parser("config")
     config_parser.set_defaults(func=_handle_config_help, parser=config_parser)
