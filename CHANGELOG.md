@@ -1,3 +1,18 @@
+## 0.10.0 (2026-01-17)
+
+### Feat
+
+- **completions**: Improve fish autocomplete behavior
+- **completions**: Add project and tag filter completions
+- **cli**: Add fish shell autocompletion
+- **cli**: Add move command to transfer tasks between environments
+- **cli**: Reverse list order with highest priority at bottom
+
+### Fix
+
+- **time-parser**: Make eom/eoy/eoq/eow mean end of current period
+- **cache**: Prevent race condition in task index assignment
+
 ## 0.9.0 (2026-01-02)
 
 ### Feat
