@@ -30,9 +30,21 @@ function __tdo_using_command
     return 1
 end
 
+# Check if current token looks like a task filter (starts with digit or contains comma)
+function __tdo_completing_filter
+    set -l token (commandline -ct)
+    string match -qr '^[0-9]' -- "$token"; or string match -q '*,*' -- "$token"
+end
+
+# Check if current token contains a comma (for multi-index completion)
+function __tdo_completing_comma_list
+    set -l token (commandline -ct)
+    string match -q '*,*' -- "$token"
+end
+
 # Global options
 complete -c tdo -l version -d "Show version"
-complete -c tdo -l env -d "Environment name" -r -a "(tdo complete envs 2>/dev/null)"
+complete -c tdo -l env -d "Environment name" -rf -a "(tdo complete envs 2>/dev/null)"
 
 # Commands
 complete -c tdo -n __tdo_needs_command -a add -d "Create new task"
@@ -54,8 +66,17 @@ complete -c tdo -n __tdo_needs_command -a move -d "Move task to another env"
 complete -c tdo -n __tdo_needs_command -a config -d "Configuration"
 complete -c tdo -n __tdo_needs_command -a complete -d "Shell completion data"
 
-# Task index filter (before command) - show task indices with descriptions
-complete -c tdo -n __tdo_needs_command -a "(tdo complete tasks 2>/dev/null)"
+# Task index filter (before command) - only show when token starts with digit
+complete -c tdo -n "__tdo_needs_command; and __tdo_completing_filter" -a "(tdo complete tasks 2>/dev/null)"
+
+# Multi-index completion (e.g., "2,<TAB>" shows "2,3", "2,4", etc.)
+complete -c tdo -n "__tdo_needs_command; and __tdo_completing_comma_list" -a "(
+    set -l token (commandline -ct)
+    set -l prefix (string replace -r '[^,]*\$' '' -- \$token)
+    tdo complete tasks 2>/dev/null | while read -l line
+        echo \$prefix\$line
+    end
+)"
 
 # Project filter (before command) - filter by project
 complete -c tdo -n __tdo_needs_command -a "(tdo complete projects 2>/dev/null | sed 's/^/project:/')" -d "Filter by project"
