@@ -9,6 +9,12 @@ pub struct Database {
 }
 
 impl Database {
+    pub fn connection(&self) -> &Connection {
+        &self.conn
+    }
+}
+
+impl Database {
     pub fn open(env_name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let db_path = get_db_path(env_name)?;
 

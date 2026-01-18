@@ -305,11 +305,14 @@ pub fn complete_tasks(conn: &Connection, indices: &[i32]) -> Result<MutationResu
 
 fn complete_single_task(conn: &Connection, index: i32) -> Result<Option<Task>, Box<dyn std::error::Error>> {
     // Get task from active table
-    let mut stmt = conn.prepare("SELECT * FROM tasks WHERE task_index = ?")?;
+    let mut stmt = conn.prepare(
+        "SELECT uid, task_index, summary, status, due, wait, priority, categories, x_properties, url, attachments
+         FROM tasks WHERE task_index = ?"
+    )?;
     let task = stmt.query_row([index], |row| Task::from_row(row));
 
     let task = match task {
-        Ok(t) => t?,
+        Ok(t) => t,
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
@@ -381,11 +384,14 @@ pub fn delete_tasks(conn: &Connection, indices: &[i32]) -> Result<MutationResult
 
 fn delete_single_task(conn: &Connection, index: i32) -> Result<Option<Task>, Box<dyn std::error::Error>> {
     // Get task
-    let mut stmt = conn.prepare("SELECT * FROM tasks WHERE task_index = ?")?;
+    let mut stmt = conn.prepare(
+        "SELECT uid, task_index, summary, status, due, wait, priority, categories, x_properties, url, attachments
+         FROM tasks WHERE task_index = ?"
+    )?;
     let task = stmt.query_row([index], |row| Task::from_row(row));
 
     let task = match task {
-        Ok(t) => t?,
+        Ok(t) => t,
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
         Err(e) => return Err(e.into()),
     };
@@ -424,6 +430,124 @@ fn delete_single_task(conn: &Connection, index: i32) -> Result<Option<Task>, Box
     Ok(Some(task))
 }
 
+pub fn move_tasks(
+    src_conn: &Connection,
+    dest_conn: &Connection,
+    indices: &[i32],
+) -> Result<MutationResult, Box<dyn std::error::Error>> {
+    let mut moved = Vec::new();
+
+    for &index in indices {
+        if let Some(task) = move_single_task(src_conn, dest_conn, index)? {
+            moved.push(task);
+        }
+    }
+
+    Ok(MutationResult {
+        success: true,
+        task: None,
+        tasks: Some(moved),
+        error: None,
+        index: None,
+    })
+}
+
+fn move_single_task(
+    src_conn: &Connection,
+    dest_conn: &Connection,
+    index: i32,
+) -> Result<Option<Task>, Box<dyn std::error::Error>> {
+    // Get task from source
+    let mut stmt = src_conn.prepare(
+        "SELECT uid, summary, status, due, wait, due_utc, wait_utc, priority,
+                x_properties, categories, url, attachments, href, pending_action, last_synced
+         FROM tasks WHERE task_index = ?"
+    )?;
+
+    let row_data = stmt.query_row([index], |row| {
+        Ok((
+            row.get::<_, String>(0)?,      // uid
+            row.get::<_, String>(1)?,      // summary
+            row.get::<_, String>(2)?,      // status
+            row.get::<_, Option<String>>(3)?,  // due
+            row.get::<_, Option<String>>(4)?,  // wait
+            row.get::<_, Option<f64>>(5)?,     // due_utc
+            row.get::<_, Option<f64>>(6)?,     // wait_utc
+            row.get::<_, Option<i32>>(7)?,     // priority
+            row.get::<_, Option<String>>(8)?,  // x_properties
+            row.get::<_, Option<String>>(9)?,  // categories
+            row.get::<_, Option<String>>(10)?, // url
+            row.get::<_, Option<String>>(11)?, // attachments
+            row.get::<_, Option<String>>(12)?, // href
+            row.get::<_, Option<String>>(13)?, // pending_action
+            row.get::<_, Option<f64>>(14)?,    // last_synced
+        ))
+    });
+
+    let (uid, summary, status, due, wait, due_utc, wait_utc, priority,
+         x_properties, categories, url, attachments, href, pending_action, _last_synced) = match row_data {
+        Ok(r) => r,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+
+    let now = now_timestamp();
+    let dest_index = next_available_index(dest_conn)?;
+
+    // Insert into destination
+    dest_conn.execute(
+        "INSERT INTO tasks (
+            uid, summary, status, due, wait, due_utc, wait_utc, priority,
+            x_properties, categories, url, attachments, href,
+            pending_action, last_synced, updated_at, task_index
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        params![
+            uid,
+            summary,
+            status,
+            due,
+            wait,
+            due_utc,
+            wait_utc,
+            priority,
+            x_properties,
+            categories,
+            url,
+            attachments,
+            href,
+            "create",  // New task in destination needs to be synced
+            Option::<f64>::None,  // last_synced - needs fresh sync
+            now,
+            dest_index,
+        ],
+    )?;
+
+    // Get the task for return value (from destination)
+    let task = get_task_by_uid(dest_conn, &uid)?;
+
+    // Delete from source (if never synced, just delete; otherwise mark for deletion)
+    if pending_action.as_deref() == Some("create") {
+        src_conn.execute("DELETE FROM tasks WHERE task_index = ?", [index])?;
+    } else {
+        // Move to deleted_tasks for sync
+        src_conn.execute(
+            "INSERT INTO deleted_tasks (
+                uid, summary, status, due, wait, due_utc, wait_utc, priority,
+                x_properties, categories, url, attachments, href,
+                last_synced, deleted_at, task_index
+            ) SELECT
+                uid, summary, status, due, wait, due_utc, wait_utc, priority,
+                x_properties, categories, url, attachments, href,
+                last_synced, ?, task_index
+            FROM tasks WHERE task_index = ?",
+            params![now, index],
+        )?;
+        src_conn.execute("DELETE FROM tasks WHERE task_index = ?", [index])?;
+    }
+
+    Ok(task)
+}
+
 fn get_task_by_uid(conn: &Connection, uid: &str) -> Result<Option<Task>, Box<dyn std::error::Error>> {
     let mut stmt = conn.prepare(
         "SELECT uid, task_index, summary, status, due, wait, priority, categories, x_properties, url, attachments
@@ -433,7 +557,7 @@ fn get_task_by_uid(conn: &Connection, uid: &str) -> Result<Option<Task>, Box<dyn
     let result = stmt.query_row([uid], |row| Task::from_row(row));
 
     match result {
-        Ok(t) => Ok(Some(t?)),
+        Ok(t) => Ok(Some(t)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
@@ -453,4 +577,91 @@ fn parse_datetime_to_timestamp(s: &str) -> Option<f64> {
         return Some(d.and_hms_opt(0, 0, 0)?.and_utc().timestamp() as f64);
     }
     None
+}
+
+// Transaction log types and functions
+
+#[derive(Debug, Serialize)]
+pub struct TransactionEntry {
+    pub id: i64,
+    pub diff_json: String,
+    pub operation: String,
+    pub created_at: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransactionResult {
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<TransactionEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+pub fn log_transaction(
+    conn: &Connection,
+    diff_json: &str,
+    operation: &str,
+    max_entries: i64,
+) -> Result<TransactionResult, Box<dyn std::error::Error>> {
+    let now = now_timestamp();
+
+    conn.execute(
+        "INSERT INTO transaction_log (diff_json, operation, created_at) VALUES (?, ?, ?)",
+        params![diff_json, operation, now],
+    )?;
+
+    // Prune old entries if needed
+    if max_entries > 0 {
+        conn.execute(
+            "DELETE FROM transaction_log
+             WHERE id NOT IN (
+                 SELECT id FROM transaction_log
+                 ORDER BY id DESC LIMIT ?
+             )",
+            [max_entries],
+        )?;
+    }
+
+    Ok(TransactionResult {
+        success: true,
+        entry: None,
+        error: None,
+    })
+}
+
+pub fn pop_transaction(conn: &Connection) -> Result<TransactionResult, Box<dyn std::error::Error>> {
+    // Get the newest entry
+    let mut stmt = conn.prepare(
+        "SELECT id, diff_json, operation, created_at FROM transaction_log ORDER BY id DESC LIMIT 1"
+    )?;
+
+    let entry = stmt.query_row([], |row| {
+        Ok(TransactionEntry {
+            id: row.get(0)?,
+            diff_json: row.get(1)?,
+            operation: row.get(2)?,
+            created_at: row.get(3)?,
+        })
+    });
+
+    match entry {
+        Ok(e) => {
+            // Delete the entry
+            conn.execute("DELETE FROM transaction_log WHERE id = ?", [e.id])?;
+            Ok(TransactionResult {
+                success: true,
+                entry: Some(e),
+                error: None,
+            })
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            Ok(TransactionResult {
+                success: true,
+                entry: None,
+                error: None,
+            })
+        }
+        Err(e) => Err(e.into()),
+    }
 }
