@@ -540,241 +540,454 @@ def _normalize_tokens(tokens: Sequence[str] | None) -> list[str]:
 
 
 async def _handle_add(args: argparse.Namespace) -> None:
+    from . import tdo_core
+
     tokens = _normalize_tokens(args.tokens)
     descriptor = _parse_update_descriptor(tokens)
     payload = _build_payload(descriptor)
-    client = await _cache_client(args.env)
-    try:
-        created = await client.create_task(payload)
-        diff: TaskSetDiff[int] = TaskSetDiff(
-            diffs={created.task_index: TaskDiff(pre=None, post=created.data)}
-        )
-        print(diff.pretty())
+    config = _resolve_config(args.env)
+    env_name = resolve_env(args.env)
 
-        # Log transaction
-        if not diff.is_empty and client.cache:
-            uid_diff = diff.to_uid_keyed(lambda idx: created.uid if idx == created.task_index else str(idx))
-            await client.cache.log_transaction(
-                uid_diff,
-                operation="add",
-                max_entries=client.config.cache.transaction_log_size,
-            )
-    finally:
-        await client.close()
+    # Extract fields for tdo_core
+    due_str = payload.due.isoformat() if payload.due else None
+    wait_str = payload.wait.isoformat() if payload.wait else None
+    project = payload.x_properties.get("X-PROJECT") if payload.x_properties else None
+
+    try:
+        result = tdo_core.add_task(
+            summary=payload.summary or "",
+            status=payload.status,
+            due=due_str,
+            wait=wait_str,
+            priority=payload.priority,
+            project=project,
+            tags=payload.categories,
+            url=payload.url,
+            env=env_name,
+        )
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    if not result:
+        _exit_with_message("failed to add task")
+
+    created = result.to_task()
+    diff: TaskSetDiff[int] = TaskSetDiff(
+        diffs={created.task_index: TaskDiff(pre=None, post=created.data)}
+    )
+    print(diff.pretty())
+
+    # Log transaction
+    if not diff.is_empty:
+        uid_diff = diff.to_uid_keyed(lambda idx: created.uid if idx == created.task_index else str(idx))
+        tdo_core.log_transaction(
+            uid_diff.to_json(),
+            operation="add",
+            max_entries=config.cache.transaction_log_size,
+            env=env_name,
+        )
 
 
 async def _handle_modify(args: argparse.Namespace) -> None:
+    from . import tdo_core
+
     tokens = _normalize_tokens(args.tokens)
     descriptor = _parse_update_descriptor(tokens)
     if not _has_update_candidates(descriptor):
         _exit_with_message("no changes provided")
-    client = await _cache_client(args.env)
-    try:
-        tasks = _select_tasks_for_filter(
-            await _sorted_tasks(client),
-            _effective_filter_indices(args.filter_indices),
-        )
-        if not tasks:
-            _exit_with_message("no tasks match filter")
-        diffs: dict[int, TaskDiff] = {}
-        index_to_uid: dict[int, str] = {}
-        for task in tasks:
-            patch = _build_patch_from_descriptor(descriptor, task)
-            if not _has_changes(patch):
-                continue
-            updated = await client.modify_task(task, patch)
-            diffs[task.task_index] = TaskDiff(pre=task.data, post=updated.data)
-            index_to_uid[task.task_index] = task.uid
-        if not diffs:
-            _exit_with_message("no changes provided")
-        result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
-        print(result.pretty())
 
-        # Log transaction
-        if not result.is_empty and client.cache:
-            uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
-            await client.cache.log_transaction(
-                uid_diff,
-                operation="modify",
-                max_entries=client.config.cache.transaction_log_size,
-            )
-    finally:
-        await client.close()
+    config = _resolve_config(args.env)
+    env_name = resolve_env(args.env)
+    indices = _effective_filter_indices(args.filter_indices)
+
+    if not indices:
+        _exit_with_message("modify command requires task indices")
+
+    int_indices = [int(i) for i in indices]
+
+    # Get tasks before modification for diff
+    try:
+        before_tasks = tdo_core.show_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    if not before_tasks:
+        _exit_with_message("no tasks match filter")
+
+    # Build changes from descriptor
+    add = descriptor.add_data
+    changes_kwargs: dict = {}
+    if add.summary:
+        changes_kwargs["summary"] = add.summary
+    if add.status:
+        changes_kwargs["status"] = add.status
+    if add.due:
+        due_dt = _resolve_due_value(add.due)
+        changes_kwargs["due"] = due_dt.isoformat() if due_dt else None
+    if add.wait:
+        wait_dt = _resolve_due_value(add.wait)
+        changes_kwargs["wait"] = wait_dt.isoformat() if wait_dt else None
+    if add.priority is not None:
+        changes_kwargs["priority"] = add.priority
+    if add.x_properties and "X-PROJECT" in add.x_properties:
+        changes_kwargs["project"] = add.x_properties["X-PROJECT"]
+    if descriptor.add_tags:
+        changes_kwargs["add_tags"] = list(descriptor.add_tags)
+    if descriptor.remove_tags:
+        changes_kwargs["remove_tags"] = list(descriptor.remove_tags)
+    if add.url:
+        changes_kwargs["url"] = add.url
+
+    if not changes_kwargs:
+        _exit_with_message("no changes provided")
+
+    # Perform modification
+    try:
+        after_tasks = tdo_core.modify_tasks(int_indices, env=env_name, **changes_kwargs)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    # Build diffs
+    before_map = {ct.index: ct.to_task() for ct in before_tasks}
+    after_map = {ct.index: ct.to_task() for ct in after_tasks}
+    diffs: dict[int, TaskDiff] = {}
+    index_to_uid: dict[int, str] = {}
+    for idx in int_indices:
+        before = before_map.get(idx)
+        after = after_map.get(idx)
+        if before and after:
+            diffs[idx] = TaskDiff(pre=before.data, post=after.data)
+            index_to_uid[idx] = before.uid
+
+    if not diffs:
+        _exit_with_message("no changes provided")
+
+    result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+    print(result.pretty())
+
+    # Log transaction
+    if not result.is_empty:
+        uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+        tdo_core.log_transaction(
+            uid_diff.to_json(),
+            operation="modify",
+            max_entries=config.cache.transaction_log_size,
+            env=env_name,
+        )
 
 
 async def _handle_do(args: argparse.Namespace) -> None:
-    client = await _cache_client(args.env)
+    from . import tdo_core
+
+    config = _resolve_config(args.env)
+    env_name = resolve_env(args.env)
+    indices = _effective_filter_indices(args.filter_indices)
+
+    if not indices:
+        _exit_with_message("do command requires task indices")
+
+    int_indices = [int(i) for i in indices]
+
+    # Get tasks before completion for diff
     try:
-        tasks = _select_tasks_for_filter(
-            await _sorted_tasks(client),
-            _effective_filter_indices(args.filter_indices),
-        )
-        if not tasks:
-            _exit_with_message("no tasks match filter")
-        diffs: dict[int, TaskDiff] = {}
-        index_to_uid: dict[int, str] = {}
-        for task in tasks:
-            # Use complete_task to move task to completed_tasks table
-            await client.complete_task(task.uid)
-            # Build diff with original data -> completed status
-            completed_data = TaskData(
-                summary=task.data.summary,
-                status="COMPLETED",
-                due=task.data.due,
-                wait=task.data.wait,
-                priority=task.data.priority,
-                x_properties=task.data.x_properties,
-                categories=task.data.categories,
-            )
-            diffs[task.task_index] = TaskDiff(pre=task.data, post=completed_data)
-            index_to_uid[task.task_index] = task.uid
-        result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
-        print(result.pretty())
+        before_tasks = tdo_core.show_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
 
-        # Log transaction
-        if not result.is_empty and client.cache:
-            uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
-            await client.cache.log_transaction(
-                uid_diff,
-                operation="do",
-                max_entries=client.config.cache.transaction_log_size,
-            )
-    finally:
-        await client.close()
+    if not before_tasks:
+        _exit_with_message("no tasks match filter")
 
-
-async def _change_status(args: argparse.Namespace, status: str, operation: str) -> None:
-    """Change task status and log the transaction."""
-    patch = TaskPatch(status=status)
-    client = await _cache_client(args.env)
+    # Complete tasks
     try:
-        tasks = _select_tasks_for_filter(
-            await _sorted_tasks(client),
-            _effective_filter_indices(args.filter_indices),
-        )
-        if not tasks:
-            _exit_with_message("no tasks match filter")
-        diffs: dict[int, TaskDiff] = {}
-        index_to_uid: dict[int, str] = {}
-        for task in tasks:
-            updated = await client.modify_task(task, patch)
-            diffs[task.task_index] = TaskDiff(pre=task.data, post=updated.data)
-            index_to_uid[task.task_index] = task.uid
-        result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
-        print(result.pretty())
+        tdo_core.complete_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
 
-        # Log transaction
-        if not result.is_empty and client.cache:
-            uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
-            await client.cache.log_transaction(
-                uid_diff,
-                operation=operation,
-                max_entries=client.config.cache.transaction_log_size,
-            )
-    finally:
-        await client.close()
+    # Build diffs
+    diffs: dict[int, TaskDiff] = {}
+    index_to_uid: dict[int, str] = {}
+    for ct in before_tasks:
+        task = ct.to_task()
+        completed_data = TaskData(
+            summary=task.data.summary,
+            status="COMPLETED",
+            due=task.data.due,
+            wait=task.data.wait,
+            priority=task.data.priority,
+            x_properties=task.data.x_properties,
+            categories=task.data.categories,
+        )
+        diffs[ct.index] = TaskDiff(pre=task.data, post=completed_data)
+        index_to_uid[ct.index] = ct.uid
+
+    result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+    print(result.pretty())
+
+    # Log transaction
+    if not result.is_empty:
+        uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+        tdo_core.log_transaction(
+            uid_diff.to_json(),
+            operation="do",
+            max_entries=config.cache.transaction_log_size,
+            env=env_name,
+        )
 
 
 async def _handle_start(args: argparse.Namespace) -> None:
     """Start a task: change status from NEEDS-ACTION to IN-PROCESS."""
-    await _change_status(args, "IN-PROCESS", "start")
+    from . import tdo_core
+
+    config = _resolve_config(args.env)
+    env_name = resolve_env(args.env)
+    indices = _effective_filter_indices(args.filter_indices)
+
+    if not indices:
+        _exit_with_message("start command requires task indices")
+
+    int_indices = [int(i) for i in indices]
+
+    # Get tasks before for diff
+    try:
+        before_tasks = tdo_core.show_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    if not before_tasks:
+        _exit_with_message("no tasks match filter")
+
+    # Start tasks
+    try:
+        after_tasks = tdo_core.start_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    # Build diffs
+    before_map = {ct.index: ct.to_task() for ct in before_tasks}
+    after_map = {ct.index: ct.to_task() for ct in after_tasks}
+    diffs: dict[int, TaskDiff] = {}
+    index_to_uid: dict[int, str] = {}
+    for idx in int_indices:
+        before = before_map.get(idx)
+        after = after_map.get(idx)
+        if before and after:
+            diffs[idx] = TaskDiff(pre=before.data, post=after.data)
+            index_to_uid[idx] = before.uid
+
+    result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+    print(result.pretty())
+
+    # Log transaction
+    if not result.is_empty:
+        uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+        tdo_core.log_transaction(
+            uid_diff.to_json(),
+            operation="start",
+            max_entries=config.cache.transaction_log_size,
+            env=env_name,
+        )
 
 
 async def _handle_stop(args: argparse.Namespace) -> None:
     """Stop a task: change status from IN-PROCESS to NEEDS-ACTION."""
-    await _change_status(args, "NEEDS-ACTION", "stop")
+    from . import tdo_core
+
+    config = _resolve_config(args.env)
+    env_name = resolve_env(args.env)
+    indices = _effective_filter_indices(args.filter_indices)
+
+    if not indices:
+        _exit_with_message("stop command requires task indices")
+
+    int_indices = [int(i) for i in indices]
+
+    # Get tasks before for diff
+    try:
+        before_tasks = tdo_core.show_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    if not before_tasks:
+        _exit_with_message("no tasks match filter")
+
+    # Stop tasks
+    try:
+        after_tasks = tdo_core.stop_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    # Build diffs
+    before_map = {ct.index: ct.to_task() for ct in before_tasks}
+    after_map = {ct.index: ct.to_task() for ct in after_tasks}
+    diffs: dict[int, TaskDiff] = {}
+    index_to_uid: dict[int, str] = {}
+    for idx in int_indices:
+        before = before_map.get(idx)
+        after = after_map.get(idx)
+        if before and after:
+            diffs[idx] = TaskDiff(pre=before.data, post=after.data)
+            index_to_uid[idx] = before.uid
+
+    result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+    print(result.pretty())
+
+    # Log transaction
+    if not result.is_empty:
+        uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+        tdo_core.log_transaction(
+            uid_diff.to_json(),
+            operation="stop",
+            max_entries=config.cache.transaction_log_size,
+            env=env_name,
+        )
 
 
 async def _handle_delete(args: argparse.Namespace) -> None:
-    client = await _cache_client(args.env)
-    try:
-        tasks = _select_tasks_for_filter(
-            await _sorted_tasks(client),
-            _effective_filter_indices(args.filter_indices),
-        )
-        if not tasks:
-            _exit_with_message("no tasks match filter")
-        diffs: dict[int, TaskDiff] = {}
-        index_to_uid: dict[int, str] = {}
-        for task in tasks:
-            await client.delete_task(task.uid)
-            diffs[task.task_index] = TaskDiff(pre=task.data, post=None)
-            index_to_uid[task.task_index] = task.uid
-        result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
-        print(result.pretty())
+    from . import tdo_core
 
-        # Log transaction
-        if not result.is_empty and client.cache:
-            uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
-            await client.cache.log_transaction(
-                uid_diff,
-                operation="delete",
-                max_entries=client.config.cache.transaction_log_size,
-            )
-    finally:
-        await client.close()
+    config = _resolve_config(args.env)
+    env_name = resolve_env(args.env)
+    indices = _effective_filter_indices(args.filter_indices)
+
+    if not indices:
+        _exit_with_message("delete command requires task indices")
+
+    int_indices = [int(i) for i in indices]
+
+    # Get tasks before deletion for diff
+    try:
+        before_tasks = tdo_core.show_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    if not before_tasks:
+        _exit_with_message("no tasks match filter")
+
+    # Delete tasks
+    try:
+        tdo_core.delete_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    # Build diffs
+    diffs: dict[int, TaskDiff] = {}
+    index_to_uid: dict[int, str] = {}
+    for ct in before_tasks:
+        task = ct.to_task()
+        diffs[ct.index] = TaskDiff(pre=task.data, post=None)
+        index_to_uid[ct.index] = ct.uid
+
+    result: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+    print(result.pretty())
+
+    # Log transaction
+    if not result.is_empty:
+        uid_diff = result.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
+        tdo_core.log_transaction(
+            uid_diff.to_json(),
+            operation="delete",
+            max_entries=config.cache.transaction_log_size,
+            env=env_name,
+        )
 
 
 async def _handle_list(args: argparse.Namespace) -> None:
+    from . import tdo_core
+
     config = _resolve_config(args.env)
-    client = await _cache_client(args.env)
+    env_name = resolve_env(args.env)
+    task_filter = getattr(args, "task_filter", None)
+
+    # Get all tasks from Rust backend
     try:
-        task_filter = getattr(args, "task_filter", None)
-        # Use SQL-based filtering that excludes waiting tasks
-        tasks = await client.list_active_tasks(
-            exclude_waiting=True,
-            task_filter=task_filter,
-        )
-        if not tasks:
-            if task_filter:
-                print("no tasks match filter")
-            else:
-                print("no cached tasks found; run 'tdo pull' to synchronize")
-            return
+        core_tasks = tdo_core.list_tasks(env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
 
-        # Filter out completed tasks (they're in a separate table, but just in case)
-        active_tasks = [t for t in tasks if t.data.status != "COMPLETED"]
-        if not active_tasks:
+    if not core_tasks:
+        if task_filter:
             print("no tasks match filter")
-            return
+        else:
+            print("no cached tasks found; run 'tdo pull' to synchronize")
+        return
 
-        # Split tasks by status: IN-PROCESS (started) and NEEDS-ACTION (backlog)
-        started = [t for t in active_tasks if t.data.status == "IN-PROCESS"]
-        backlog = [t for t in active_tasks if t.data.status == "NEEDS-ACTION"]
-        other = [t for t in active_tasks if t.data.status not in ("IN-PROCESS", "NEEDS-ACTION", "COMPLETED")]
+    # Convert to Task objects
+    tasks = [ct.to_task() for ct in core_tasks]
 
-        reverse = not getattr(args, "no_reverse", False)
+    # Apply task_filter in Python
+    if task_filter:
+        if task_filter.indices:
+            tasks = [t for t in tasks if t.task_index in task_filter.indices]
+        if task_filter.project:
+            tasks = [t for t in tasks if t.data.x_properties.get("X-PROJECT") == task_filter.project]
+        if task_filter.tags:
+            tasks = [t for t in tasks if t.data.categories and any(tag in t.data.categories for tag in task_filter.tags)]
 
-        # Display order: Backlog first, then Started (so Started appears at bottom)
+    # Filter out waiting tasks (wait date in the future)
+    now = datetime.now()
+    tasks = [t for t in tasks if not t.data.wait or t.data.wait <= now]
+
+    # Filter out completed tasks (they're in a separate table, but just in case)
+    active_tasks = [t for t in tasks if t.data.status != "COMPLETED"]
+    if not active_tasks:
+        print("no tasks match filter")
+        return
+
+    # Split tasks by status: IN-PROCESS (started) and NEEDS-ACTION (backlog)
+    started = [t for t in active_tasks if t.data.status == "IN-PROCESS"]
+    backlog = [t for t in active_tasks if t.data.status == "NEEDS-ACTION"]
+    other = [t for t in active_tasks if t.data.status not in ("IN-PROCESS", "NEEDS-ACTION", "COMPLETED")]
+
+    reverse = not getattr(args, "no_reverse", False)
+
+    # Display order: Backlog first, then Started (so Started appears at bottom)
+    if backlog:
+        _pretty_print_tasks(backlog, config.show_uids, title="Backlog", reverse=reverse)
+    if started:
         if backlog:
-            _pretty_print_tasks(backlog, config.show_uids, title="Backlog", reverse=reverse)
-        if started:
-            if backlog:
-                print()  # Blank line between tables
-            _pretty_print_tasks(started, config.show_uids, title="Started", reverse=reverse)
-        # Handle tasks with other statuses (if any)
-        if other:
-            if started or backlog:
-                print()
-            _pretty_print_tasks(other, config.show_uids, title="Other", reverse=reverse)
-    finally:
-        await client.close()
+            print()  # Blank line between tables
+        _pretty_print_tasks(started, config.show_uids, title="Started", reverse=reverse)
+    # Handle tasks with other statuses (if any)
+    if other:
+        if started or backlog:
+            print()
+        _pretty_print_tasks(other, config.show_uids, title="Other", reverse=reverse)
 
 
 async def _handle_wait(args: argparse.Namespace) -> None:
     """Show tasks with future wait dates."""
+    from . import tdo_core
+
     config = _resolve_config(args.env)
-    client = await _cache_client(args.env)
+    env_name = resolve_env(args.env)
+    task_filter = getattr(args, "task_filter", None)
+
+    # Get all tasks from Rust backend
     try:
-        task_filter = getattr(args, "task_filter", None)
-        # Use SQL-based filtering for waiting tasks
-        waiting_tasks = await client.list_waiting_tasks(task_filter=task_filter)
-        if not waiting_tasks:
-            print("no waiting tasks")
-            return
-        _pretty_print_tasks(waiting_tasks, config.show_uids, title="Waiting")
-    finally:
-        await client.close()
+        core_tasks = tdo_core.list_tasks(env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    # Convert to Task objects
+    tasks = [ct.to_task() for ct in core_tasks]
+
+    # Filter to only waiting tasks (wait date in the future)
+    now = datetime.now()
+    waiting_tasks = [t for t in tasks if t.data.wait and t.data.wait > now]
+
+    # Apply task_filter
+    if task_filter:
+        if task_filter.indices:
+            waiting_tasks = [t for t in waiting_tasks if t.task_index in task_filter.indices]
+        if task_filter.project:
+            waiting_tasks = [t for t in waiting_tasks if t.data.x_properties.get("X-PROJECT") == task_filter.project]
+        if task_filter.tags:
+            waiting_tasks = [t for t in waiting_tasks if t.data.categories and any(tag in t.data.categories for tag in task_filter.tags)]
+
+    if not waiting_tasks:
+        print("no waiting tasks")
+        return
+    _pretty_print_tasks(waiting_tasks, config.show_uids, title="Waiting")
 
 
 def _format_task_detail(task: Task) -> str:
@@ -816,20 +1029,31 @@ def _format_task_detail(task: Task) -> str:
 
 
 async def _handle_show(args: argparse.Namespace) -> None:
-    client = await _cache_client(args.env)
+    from . import tdo_core
+
+    env_name = resolve_env(args.env)
+    indices = _effective_filter_indices(args.filter_indices)
+
+    if not indices:
+        _exit_with_message("show command requires task indices")
+
+    # Convert string indices to int
+    int_indices = [int(i) for i in indices]
+
     try:
-        tasks = _select_tasks_for_filter(
-            await _sorted_tasks(client),
-            _effective_filter_indices(args.filter_indices),
-        )
-        if not tasks:
-            _exit_with_message("no tasks match filter")
-        for i, task in enumerate(tasks):
-            if i > 0:
-                print()
-            print(_format_task_detail(task))
-    finally:
-        await client.close()
+        core_tasks = tdo_core.show_tasks(int_indices, env=env_name)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    if not core_tasks:
+        _exit_with_message("no tasks match filter")
+
+    tasks = [ct.to_task() for ct in core_tasks]
+
+    for i, task in enumerate(tasks):
+        if i > 0:
+            print()
+        print(_format_task_detail(task))
 
 
 async def _handle_attach(args: argparse.Namespace) -> None:
@@ -970,7 +1194,7 @@ async def _handle_prioritize(args: argparse.Namespace) -> None:
 
 async def _handle_move(args: argparse.Namespace) -> None:
     """Move tasks from current environment to destination environment."""
-    from .caldav_client import CalDAVClient
+    from . import tdo_core
 
     dest_env = args.dest_env
     source_env = args.env
@@ -983,96 +1207,76 @@ async def _handle_move(args: argparse.Namespace) -> None:
     # Validate destination environment config exists
     try:
         dest_config = load_config(dest_env)
+        source_config = _resolve_config(source_env)
     except (RuntimeError, FileNotFoundError) as e:
-        _exit_with_message(f"destination environment '{dest_env}' not configured: {e}")
+        _exit_with_message(f"environment not configured: {e}")
 
-    # Get source client
-    source_client = await _cache_client(source_env)
+    indices = _effective_filter_indices(args.filter_indices)
+    if not indices:
+        _exit_with_message("move command requires task indices")
 
-    # Get destination client
-    dest_client = await CalDAVClient.create(dest_config)
+    int_indices = [int(i) for i in indices]
 
+    # Get tasks before move for diff
     try:
-        # Select tasks from source
-        tasks = _select_tasks_for_filter(
-            await _sorted_tasks(source_client),
-            _effective_filter_indices(args.filter_indices),
+        before_tasks = tdo_core.show_tasks(int_indices, env=source_resolved)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    if not before_tasks:
+        _exit_with_message("no tasks match filter")
+
+    # Build index to uid mapping for source
+    index_to_uid: dict[int, str] = {ct.index: ct.uid for ct in before_tasks}
+
+    # Move tasks
+    try:
+        moved_tasks = tdo_core.move_tasks(int_indices, dest_env, env=source_resolved)
+    except tdo_core.TdoCoreError as e:
+        _exit_with_message(f"error: {e}")
+
+    # Build diffs
+    source_diffs: dict[int, TaskDiff] = {}
+    dest_diffs: dict[int, TaskDiff] = {}
+    dest_index_to_uid: dict[int, str] = {}
+
+    for before_ct in before_tasks:
+        src_task = before_ct.to_task()
+        source_diffs[before_ct.index] = TaskDiff(pre=src_task.data, post=None)
+
+    for dest_ct in moved_tasks:
+        dest_task = dest_ct.to_task()
+        dest_diffs[dest_ct.index] = TaskDiff(pre=None, post=dest_task.data)
+        dest_index_to_uid[dest_ct.index] = dest_ct.uid
+
+    # Display results
+    print(f"Moved {len(moved_tasks)} task(s) from '{source_resolved}' to '{dest_env}':")
+    for before_ct, dest_ct in zip(before_tasks, moved_tasks):
+        print(f"  [{before_ct.index}] {before_ct.summary} -> [{dest_ct.index}] in {dest_env}")
+
+    # Log transaction for source environment
+    if source_diffs:
+        source_uid_diff = TaskSetDiff(diffs=source_diffs).to_uid_keyed(
+            lambda idx: index_to_uid.get(idx, str(idx))
         )
-        if not tasks:
-            _exit_with_message("no tasks match filter")
+        tdo_core.log_transaction(
+            source_uid_diff.to_json(),
+            operation="move-out",
+            max_entries=source_config.cache.transaction_log_size,
+            env=source_resolved,
+        )
 
-        # Build index to uid mapping for source
-        index_to_uid: dict[int, str] = {
-            t.task_index: t.uid for t in tasks if t.task_index is not None
-        }
-
-        # Track diffs for transaction logging
-        source_diffs: dict[int, TaskDiff] = {}
-        dest_diffs: dict[int, TaskDiff] = {}
-        moved_tasks: list[tuple[Task, Task]] = []  # (source, dest) pairs
-
-        for task in tasks:
-            # Create payload for destination from source task data
-            payload = TaskPayload(
-                summary=task.data.summary,
-                status=task.data.status,
-                due=task.data.due,
-                wait=task.data.wait,
-                priority=task.data.priority,
-                x_properties=dict(task.data.x_properties),
-                categories=list(task.data.categories) if task.data.categories else None,
-                url=task.data.url,
-                attachments=list(task.data.attachments),
-            )
-
-            # Create in destination (gets new UID and index)
-            dest_task = await dest_client.create_task(payload)
-
-            # Mark for deletion in source
-            await source_client.delete_task(task.uid)
-
-            # Record diffs
-            if task.task_index is not None:
-                source_diffs[task.task_index] = TaskDiff(pre=task.data, post=None)
-            if dest_task.task_index is not None:
-                dest_diffs[dest_task.task_index] = TaskDiff(pre=None, post=dest_task.data)
-            moved_tasks.append((task, dest_task))
-
-        # Display results
-        print(f"Moved {len(moved_tasks)} task(s) from '{source_resolved}' to '{dest_env}':")
-        for src, dst in moved_tasks:
-            print(f"  [{src.task_index}] {src.data.summary} -> [{dst.task_index}] in {dest_env}")
-
-        # Log transaction for source environment
-        if source_client.cache and source_diffs:
-            source_uid_diff = TaskSetDiff(diffs=source_diffs).to_uid_keyed(
-                lambda idx: index_to_uid.get(idx, str(idx))
-            )
-            await source_client.cache.log_transaction(
-                source_uid_diff,
-                operation="move-out",
-                max_entries=source_client.config.cache.transaction_log_size,
-            )
-
-        # Log transaction for destination environment
-        if dest_client.cache and dest_diffs:
-            dest_index_to_uid: dict[int, str] = {
-                dst.task_index: dst.uid
-                for _, dst in moved_tasks
-                if dst.task_index is not None
-            }
-            dest_uid_diff = TaskSetDiff(diffs=dest_diffs).to_uid_keyed(
-                lambda idx: dest_index_to_uid.get(idx, str(idx))
-            )
-            await dest_client.cache.log_transaction(
-                dest_uid_diff,
-                operation="move-in",
-                max_entries=dest_client.config.cache.transaction_log_size,
-            )
-
-    finally:
-        await source_client.close()
-        await dest_client.close()
+    # Log transaction for destination environment
+    if dest_diffs:
+        dest_uid_diff = TaskSetDiff(diffs=dest_diffs).to_uid_keyed(
+            lambda idx: dest_index_to_uid.get(idx, str(idx))
+        )
+        tdo_core.log_transaction(
+            dest_uid_diff.to_json(),
+            operation="move-in",
+            max_entries=dest_config.cache.transaction_log_size,
+            env=dest_env,
+        )
 
 
 async def _handle_pull(args: argparse.Namespace) -> None:
