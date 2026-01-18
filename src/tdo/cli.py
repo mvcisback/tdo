@@ -631,10 +631,10 @@ async def _handle_modify(args: argparse.Namespace) -> None:
         changes_kwargs["priority"] = add.priority
     if add.x_properties and "X-PROJECT" in add.x_properties:
         changes_kwargs["project"] = add.x_properties["X-PROJECT"]
-    if descriptor.add_tags:
-        changes_kwargs["add_tags"] = list(descriptor.add_tags)
-    if descriptor.remove_tags:
-        changes_kwargs["remove_tags"] = list(descriptor.remove_tags)
+    if add.categories:
+        changes_kwargs["add_tags"] = list(add.categories)
+    if descriptor.remove_data.categories:
+        changes_kwargs["remove_tags"] = list(descriptor.remove_data.categories)
     if add.url:
         changes_kwargs["url"] = add.url
 

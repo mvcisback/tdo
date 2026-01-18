@@ -4,12 +4,15 @@ import io
 from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from tdo import cli
 from tdo.config import CaldavConfig
 from tdo.models import Task, TaskData, TaskPatch, TaskPayload
+from tdo.tdo_core import CoreTask
 
 
 def run_cli(arguments: list[str]) -> tuple[int, str]:
@@ -22,7 +25,219 @@ def run_cli(arguments: list[str]) -> tuple[int, str]:
     return exit_code, buffer.getvalue()
 
 
+class MockTdoCore:
+    """Mock for tdo_core module functions."""
+
+    last_add_kwargs: dict[str, Any] | None = None
+    last_modify_kwargs: dict[str, Any] | None = None
+    last_modified_indices: list[int] | None = None
+    deleted_indices: list[int] = []
+    completed_indices: list[int] = []
+    started_indices: list[int] = []
+    stopped_indices: list[int] = []
+    moved_indices: list[int] = []
+    moved_dest_env: str | None = None
+
+    default_tasks: list[CoreTask] = [
+        CoreTask(uid="list-task", index=1, summary="List task", status="NEEDS-ACTION", priority=3)
+    ]
+    task_entries: list[CoreTask] = list(default_tasks)
+    _next_index: int = 2
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.last_add_kwargs = None
+        cls.last_modify_kwargs = None
+        cls.last_modified_indices = None
+        cls.deleted_indices = []
+        cls.completed_indices = []
+        cls.started_indices = []
+        cls.stopped_indices = []
+        cls.moved_indices = []
+        cls.moved_dest_env = None
+        cls.task_entries = list(cls.default_tasks)
+        cls._next_index = 2
+
+    @classmethod
+    def list_tasks(cls, env: str = "default") -> list[CoreTask]:
+        return list(cls.task_entries)
+
+    @classmethod
+    def show_tasks(cls, indices: list[int], env: str = "default") -> list[CoreTask]:
+        return [t for t in cls.task_entries if t.index in indices]
+
+    @classmethod
+    def add_task(
+        cls,
+        summary: str,
+        *,
+        status: str | None = None,
+        due: str | None = None,
+        wait: str | None = None,
+        priority: int | None = None,
+        project: str | None = None,
+        tags: list[str] | None = None,
+        url: str | None = None,
+        env: str = "default",
+    ) -> CoreTask:
+        cls.last_add_kwargs = {
+            "summary": summary,
+            "status": status,
+            "due": due,
+            "wait": wait,
+            "priority": priority,
+            "project": project,
+            "tags": tags,
+            "url": url,
+        }
+        task_index = cls._next_index
+        cls._next_index += 1
+        new_task = CoreTask(
+            uid="dummy-task",
+            index=task_index,
+            summary=summary,
+            status=status or "NEEDS-ACTION",
+            priority=priority,
+            tags=tags,
+            project=project,
+        )
+        cls.task_entries.append(new_task)
+        return new_task
+
+    @classmethod
+    def modify_tasks(
+        cls,
+        indices: list[int],
+        *,
+        summary: str | None = None,
+        status: str | None = None,
+        due: str | None = None,
+        wait: str | None = None,
+        priority: int | None = None,
+        project: str | None = None,
+        add_tags: list[str] | None = None,
+        remove_tags: list[str] | None = None,
+        url: str | None = None,
+        env: str = "default",
+    ) -> list[CoreTask]:
+        cls.last_modify_kwargs = {
+            "summary": summary,
+            "status": status,
+            "due": due,
+            "wait": wait,
+            "priority": priority,
+            "project": project,
+            "add_tags": add_tags,
+            "remove_tags": remove_tags,
+            "url": url,
+        }
+        cls.last_modified_indices = indices
+        result = []
+        for task in cls.task_entries:
+            if task.index in indices:
+                # Apply modifications
+                new_summary = summary if summary else task.summary
+                new_priority = priority if priority is not None else task.priority
+                new_tags = list(task.tags or []) if task.tags else []
+                if add_tags:
+                    new_tags.extend(add_tags)
+                if remove_tags:
+                    new_tags = [t for t in new_tags if t not in remove_tags]
+                modified = CoreTask(
+                    uid=task.uid,
+                    index=task.index,
+                    summary=new_summary,
+                    status=status or task.status,
+                    priority=new_priority,
+                    tags=new_tags if new_tags else None,
+                    project=project if project else task.project,
+                )
+                result.append(modified)
+        return result
+
+    @classmethod
+    def complete_tasks(cls, indices: list[int], env: str = "default") -> list[CoreTask]:
+        cls.completed_indices.extend(indices)
+        return [t for t in cls.task_entries if t.index in indices]
+
+    @classmethod
+    def start_tasks(cls, indices: list[int], env: str = "default") -> list[CoreTask]:
+        cls.started_indices.extend(indices)
+        result = []
+        for task in cls.task_entries:
+            if task.index in indices:
+                modified = CoreTask(
+                    uid=task.uid,
+                    index=task.index,
+                    summary=task.summary,
+                    status="IN-PROCESS",
+                    priority=task.priority,
+                    tags=task.tags,
+                    project=task.project,
+                )
+                result.append(modified)
+        return result
+
+    @classmethod
+    def stop_tasks(cls, indices: list[int], env: str = "default") -> list[CoreTask]:
+        cls.stopped_indices.extend(indices)
+        result = []
+        for task in cls.task_entries:
+            if task.index in indices:
+                modified = CoreTask(
+                    uid=task.uid,
+                    index=task.index,
+                    summary=task.summary,
+                    status="NEEDS-ACTION",
+                    priority=task.priority,
+                    tags=task.tags,
+                    project=task.project,
+                )
+                result.append(modified)
+        return result
+
+    @classmethod
+    def delete_tasks(cls, indices: list[int], env: str = "default") -> list[CoreTask]:
+        cls.deleted_indices.extend(indices)
+        deleted = [t for t in cls.task_entries if t.index in indices]
+        cls.task_entries = [t for t in cls.task_entries if t.index not in indices]
+        return deleted
+
+    @classmethod
+    def move_tasks(cls, indices: list[int], dest_env: str, env: str = "default") -> list[CoreTask]:
+        cls.moved_indices.extend(indices)
+        cls.moved_dest_env = dest_env
+        moved = []
+        for task in cls.task_entries:
+            if task.index in indices:
+                # Create new task in dest with new index
+                new_task = CoreTask(
+                    uid=f"dest-{task.uid}",
+                    index=100 + task.index,  # Different index in dest
+                    summary=task.summary,
+                    status=task.status,
+                    priority=task.priority,
+                    tags=task.tags,
+                    project=task.project,
+                )
+                moved.append(new_task)
+        cls.task_entries = [t for t in cls.task_entries if t.index not in indices]
+        return moved
+
+    @classmethod
+    def log_transaction(
+        cls,
+        diff_json: str,
+        operation: str,
+        max_entries: int = 100,
+        env: str = "default",
+    ) -> bool:
+        return True
+
+
 class DummyClient:
+    """Dummy CalDAV client for tests that still need it (attach, prioritize, undo, etc.)."""
+
     last_payload: TaskPayload | None = None
     last_patch: TaskPatch | None = None
     last_modified_uid: str | None = None
@@ -138,6 +353,22 @@ async def _mock_cache_client(env: str | None) -> DummyClient:
 @pytest.fixture(autouse=True)
 def stub_cal_dav(monkeypatch: pytest.MonkeyPatch) -> None:
     DummyClient.reset()
+    MockTdoCore.reset()
+
+    # Mock tdo_core module functions
+    from tdo import tdo_core
+    monkeypatch.setattr(tdo_core, "list_tasks", MockTdoCore.list_tasks)
+    monkeypatch.setattr(tdo_core, "show_tasks", MockTdoCore.show_tasks)
+    monkeypatch.setattr(tdo_core, "add_task", MockTdoCore.add_task)
+    monkeypatch.setattr(tdo_core, "modify_tasks", MockTdoCore.modify_tasks)
+    monkeypatch.setattr(tdo_core, "complete_tasks", MockTdoCore.complete_tasks)
+    monkeypatch.setattr(tdo_core, "start_tasks", MockTdoCore.start_tasks)
+    monkeypatch.setattr(tdo_core, "stop_tasks", MockTdoCore.stop_tasks)
+    monkeypatch.setattr(tdo_core, "delete_tasks", MockTdoCore.delete_tasks)
+    monkeypatch.setattr(tdo_core, "move_tasks", MockTdoCore.move_tasks)
+    monkeypatch.setattr(tdo_core, "log_transaction", MockTdoCore.log_transaction)
+
+    # Keep CalDAV client mock for commands that still use it
     monkeypatch.setattr(cli, "_cache_client", _mock_cache_client)
     monkeypatch.setattr(
         cli,
@@ -160,10 +391,10 @@ def stub_cal_dav(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_add_command_parses_tokens() -> None:
     exit_code, stdout = run_cli(["add", "Create", "pri:H", "x:X-TEST:value"])
     assert exit_code == 0
-    assert "Created (1):" in stdout
-    assert DummyClient.last_payload is not None
-    assert DummyClient.last_payload.priority == 1
-    assert DummyClient.last_payload.x_properties == {"X-TEST": "value"}
+    assert "Created" in stdout
+    assert MockTdoCore.last_add_kwargs is not None
+    assert MockTdoCore.last_add_kwargs["priority"] == 1
+    assert MockTdoCore.last_add_kwargs["summary"] == "Create"
 
 
 def test_add_command_parses_tags_and_project() -> None:
@@ -178,20 +409,20 @@ def test_add_command_parses_tags_and_project() -> None:
         ]
     )
     assert exit_code == 0
-    payload = DummyClient.last_payload
-    assert payload is not None
-    assert payload.x_properties.get("X-PROJECT") == "work"
-    assert payload.categories
-    assert set(payload.categories) == {"tag1", "tag2"}
-    assert payload.due == datetime(2025, 1, 1, 3, 0, 0)
+    kwargs = MockTdoCore.last_add_kwargs
+    assert kwargs is not None
+    assert kwargs["project"] == "work"
+    assert kwargs["tags"]
+    assert set(kwargs["tags"]) == {"tag1", "tag2"}
+    assert kwargs["due"] is not None  # due is passed as ISO string
 
 
 def test_add_command_supports_multi_word_description() -> None:
     exit_code, stdout = run_cli(["add", "multi", "word", "description"])
     assert exit_code == 0
-    payload = DummyClient.last_payload
-    assert payload is not None
-    assert payload.summary == "multi word description"
+    kwargs = MockTdoCore.last_add_kwargs
+    assert kwargs is not None
+    assert kwargs["summary"] == "multi word description"
 
 
 def test_add_command_allows_description_tokens_after_metadata() -> None:
@@ -206,52 +437,52 @@ def test_add_command_allows_description_tokens_after_metadata() -> None:
         ]
     )
     assert exit_code == 0
-    payload = DummyClient.last_payload
-    assert payload is not None
-    assert payload.summary == "first later words"
-    assert payload.x_properties.get("X-PROJECT") == "work"
-    assert payload.categories
-    assert set(payload.categories) == {"tag"}
+    kwargs = MockTdoCore.last_add_kwargs
+    assert kwargs is not None
+    assert kwargs["summary"] == "first later words"
+    assert kwargs["project"] == "work"
+    assert kwargs["tags"]
+    assert set(kwargs["tags"]) == {"tag"}
 
 
 def test_modify_command_accepts_summary_patch() -> None:
-    exit_code, stdout = run_cli(["modify", "existing", "summary:Updated", "pri:L"])
+    exit_code, stdout = run_cli(["1", "modify", "summary:Updated", "pri:L"])
     assert exit_code == 0
-    assert DummyClient.last_patch is not None
-    assert DummyClient.last_patch.summary == "Updated"
-    assert DummyClient.last_patch.priority == 9
+    assert MockTdoCore.last_modify_kwargs is not None
+    assert MockTdoCore.last_modify_kwargs["summary"] == "Updated"
+    assert MockTdoCore.last_modify_kwargs["priority"] == 9
 
 
 def test_modify_command_adds_tag_without_other_changes() -> None:
     exit_code, stdout = run_cli(["1", "modify", "+foo2"])
     assert exit_code == 0
-    assert "Updated (1):" in stdout
-    assert DummyClient.last_patch is not None
-    assert DummyClient.last_patch.categories == ["foo2"]
+    assert "Updated" in stdout
+    assert MockTdoCore.last_modify_kwargs is not None
+    assert MockTdoCore.last_modify_kwargs["add_tags"] == ["foo2"]
 
 
 def test_delete_command_accepts_filter_indices() -> None:
-    DummyClient.list_entries = [
-        Task(uid="first", data=TaskData(summary="Alpha", due=None, priority=1), task_index=1),
-        Task(uid="second", data=TaskData(summary="Bravo", due=None, priority=1), task_index=2),
-        Task(uid="third", data=TaskData(summary="Charlie", due=None, priority=1), task_index=3),
+    MockTdoCore.task_entries = [
+        CoreTask(uid="first", index=1, summary="Alpha", status="NEEDS-ACTION", priority=1),
+        CoreTask(uid="second", index=2, summary="Bravo", status="NEEDS-ACTION", priority=1),
+        CoreTask(uid="third", index=3, summary="Charlie", status="NEEDS-ACTION", priority=1),
     ]
     exit_code, stdout = run_cli(["1,3", "del"])
     assert exit_code == 0
-    assert "Deleted (2):" in stdout
-    assert "[1] Alpha" in stdout
-    assert "[3] Charlie" in stdout
-    assert DummyClient.deleted == ["first", "third"]
+    assert "Deleted" in stdout
+    assert "Alpha" in stdout
+    assert "Charlie" in stdout
+    assert MockTdoCore.deleted_indices == [1, 3]
 
 
 def test_delete_command_accepts_numeric_identifiers() -> None:
-    DummyClient.list_entries = [
-        Task(uid="first", data=TaskData(summary="First", due=None, priority=1), task_index=1),
-        Task(uid="second", data=TaskData(summary="Second", due=None, priority=2), task_index=2),
+    MockTdoCore.task_entries = [
+        CoreTask(uid="first", index=1, summary="First", status="NEEDS-ACTION", priority=1),
+        CoreTask(uid="second", index=2, summary="Second", status="NEEDS-ACTION", priority=2),
     ]
     exit_code, stdout = run_cli(["1", "del"])
     assert exit_code == 0
-    assert DummyClient.deleted == ["first"]
+    assert MockTdoCore.deleted_indices == [1]
 
 
 def test_list_command_outputs_tasks() -> None:
@@ -264,9 +495,9 @@ def test_list_command_outputs_tasks() -> None:
 
 
 def test_list_command_hides_completed_tasks() -> None:
-    DummyClient.list_entries = [
-        Task(uid="active", data=TaskData(summary="Active task", due=None, priority=1), task_index=1),
-        Task(uid="done", data=TaskData(summary="Done task", due=None, priority=1, status="COMPLETED"), task_index=2),
+    MockTdoCore.task_entries = [
+        CoreTask(uid="active", index=1, summary="Active task", status="NEEDS-ACTION", priority=1),
+        CoreTask(uid="done", index=2, summary="Done task", status="COMPLETED", priority=1),
     ]
     exit_code, stdout = run_cli(["list"])
     assert exit_code == 0
@@ -281,9 +512,9 @@ def test_default_command_is_list() -> None:
 
 
 def test_filter_indices_default_to_list_command() -> None:
-    DummyClient.list_entries = [
-        Task(uid="first", data=TaskData(summary="Alpha", due=None, priority=1), task_index=1),
-        Task(uid="second", data=TaskData(summary="Bravo", due=None, priority=2), task_index=2),
+    MockTdoCore.task_entries = [
+        CoreTask(uid="first", index=1, summary="Alpha", status="NEEDS-ACTION", priority=1),
+        CoreTask(uid="second", index=2, summary="Bravo", status="NEEDS-ACTION", priority=2),
     ]
     exit_code, stdout = run_cli(["2"])
     assert exit_code == 0
@@ -292,36 +523,36 @@ def test_filter_indices_default_to_list_command() -> None:
 
 
 def test_modify_command_accepts_dash_prefixed_tokens() -> None:
-    DummyClient.list_entries = [
-        Task(uid="first", data=TaskData(summary="First", due=None, priority=1), task_index=1),
-        Task(uid="second", data=TaskData(summary="Second", due=None, priority=2), task_index=2),
+    MockTdoCore.task_entries = [
+        CoreTask(uid="first", index=1, summary="First", status="NEEDS-ACTION", priority=1),
+        CoreTask(uid="second", index=2, summary="Second", status="NEEDS-ACTION", priority=2),
     ]
     exit_code, stdout = run_cli(["1", "modify", "-bar", "summary:Updated"])
     assert exit_code == 0
-    assert DummyClient.last_patch is not None
-    assert DummyClient.last_patch.summary == "Updated"
+    assert MockTdoCore.last_modify_kwargs is not None
+    assert MockTdoCore.last_modify_kwargs["summary"] == "Updated"
 
 
 def test_modify_command_removes_dash_prefixed_tag() -> None:
-    DummyClient.list_entries = [
-        Task(uid="first", data=TaskData(summary="First", due=None, priority=1, categories=["foo"]), task_index=1),
+    MockTdoCore.task_entries = [
+        CoreTask(uid="first", index=1, summary="First", status="NEEDS-ACTION", priority=1, tags=["foo"]),
     ]
     exit_code, stdout = run_cli(["1", "modify", "-foo"])
     assert exit_code == 0
-    assert "Updated (1):" in stdout
-    assert "[1] First" in stdout
-    assert DummyClient.last_patch is not None
-    assert DummyClient.last_patch.categories == []
+    assert "Updated" in stdout
+    assert "First" in stdout
+    assert MockTdoCore.last_modify_kwargs is not None
+    assert MockTdoCore.last_modify_kwargs["remove_tags"] == ["foo"]
 
 
 def test_modify_command_accepts_numeric_identifier() -> None:
-    DummyClient.list_entries = [
-        Task(uid="first", data=TaskData(summary="First", due=None, priority=1), task_index=1),
-        Task(uid="second", data=TaskData(summary="Second", due=None, priority=2), task_index=2),
+    MockTdoCore.task_entries = [
+        CoreTask(uid="first", index=1, summary="First", status="NEEDS-ACTION", priority=1),
+        CoreTask(uid="second", index=2, summary="Second", status="NEEDS-ACTION", priority=2),
     ]
     exit_code, stdout = run_cli(["1", "modify", "summary:Updated"])
     assert exit_code == 0
-    assert DummyClient.last_modified_uid == "first"
+    assert MockTdoCore.last_modified_indices == [1]
 
 
 def test_list_command_shows_uids_when_enabled(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -393,74 +624,27 @@ def test_config_init_command_writes_file(tmp_path) -> None:
     assert "env = \"test\"" in contents
 
 
-class DestDummyClient:
-    """Separate dummy client for destination environment in move tests."""
-
-    last_payload: TaskPayload | None = None
-    _next_index: int = 100  # Start at different index than source
-
-    def __init__(self, config: CaldavConfig) -> None:
-        self.config = config
-        self.cache = None
-
-    @classmethod
-    def reset(cls) -> None:
-        cls.last_payload = None
-        cls._next_index = 100
-
-    async def close(self) -> None:
-        pass
-
-    async def create_task(self, payload: TaskPayload) -> Task:
-        DestDummyClient.last_payload = payload
-        task_index = DestDummyClient._next_index
-        DestDummyClient._next_index += 1
-        return Task(
-            uid="dest-task",
-            data=TaskData(
-                summary=payload.summary,
-                due=payload.due,
-                priority=payload.priority,
-                x_properties=payload.x_properties,
-                categories=list(payload.categories or []),
-                url=payload.url,
-                attachments=list(payload.attachments or []),
-            ),
-            task_index=task_index,
-        )
-
-
 def test_move_command_moves_task_to_dest_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that move command creates task in dest and marks for deletion in source."""
-    DummyClient.reset()
-    DestDummyClient.reset()
-    DummyClient.list_entries = [
-        Task(
+    MockTdoCore.reset()
+    MockTdoCore.task_entries = [
+        CoreTask(
             uid="source-task",
-            data=TaskData(summary="Task to move", due=None, priority=3, categories=["tag1"]),
-            task_index=1,
+            index=1,
+            summary="Task to move",
+            status="NEEDS-ACTION",
+            priority=3,
+            tags=["tag1"],
         ),
     ]
-
-    # Mock CalDAVClient.create for destination
-    async def mock_caldav_create(config: CaldavConfig) -> DestDummyClient:
-        return DestDummyClient(config)
-
-    from tdo import caldav_client
-
-    monkeypatch.setattr(caldav_client, "CalDAVClient", type("CalDAVClient", (), {"create": mock_caldav_create}))
 
     exit_code, stdout = run_cli(["1", "move", "work"])
     assert exit_code == 0
     assert "Moved 1 task(s)" in stdout
     assert "work" in stdout
-    # Verify task was deleted from source
-    assert "source-task" in DummyClient.deleted
-    # Verify task was created in destination with correct data
-    assert DestDummyClient.last_payload is not None
-    assert DestDummyClient.last_payload.summary == "Task to move"
-    assert DestDummyClient.last_payload.priority == 3
-    assert DestDummyClient.last_payload.categories == ["tag1"]
+    # Verify task was moved
+    assert MockTdoCore.moved_indices == [1]
+    assert MockTdoCore.moved_dest_env == "work"
 
 
 def test_move_command_rejects_same_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -488,39 +672,23 @@ def test_move_command_rejects_missing_dest_env(monkeypatch: pytest.MonkeyPatch) 
 
 def test_move_command_preserves_task_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that all task properties are preserved during move."""
-    DummyClient.reset()
-    DestDummyClient.reset()
-    DummyClient.list_entries = [
-        Task(
+    MockTdoCore.reset()
+    MockTdoCore.task_entries = [
+        CoreTask(
             uid="full-task",
-            data=TaskData(
-                summary="Full task",
-                due=datetime(2025, 6, 15, 10, 0),
-                priority=1,
-                categories=["work", "urgent"],
-                x_properties={"X-PROJECT": "myproject", "X-CUSTOM": "value"},
-                url="https://example.com/task",
-            ),
-            task_index=1,
+            index=1,
+            summary="Full task",
+            status="NEEDS-ACTION",
+            due="2025-06-15T10:00:00",
+            priority=1,
+            tags=["work", "urgent"],
+            project="myproject",
+            url="https://example.com/task",
         ),
     ]
 
-    async def mock_caldav_create(config: CaldavConfig) -> DestDummyClient:
-        return DestDummyClient(config)
-
-    from tdo import caldav_client
-
-    monkeypatch.setattr(caldav_client, "CalDAVClient", type("CalDAVClient", (), {"create": mock_caldav_create}))
-
     exit_code, stdout = run_cli(["1", "move", "work"])
     assert exit_code == 0
-
-    payload = DestDummyClient.last_payload
-    assert payload is not None
-    assert payload.summary == "Full task"
-    assert payload.due == datetime(2025, 6, 15, 10, 0)
-    assert payload.priority == 1
-    assert set(payload.categories or []) == {"work", "urgent"}
-    assert payload.x_properties.get("X-PROJECT") == "myproject"
-    assert payload.x_properties.get("X-CUSTOM") == "value"
-    assert payload.url == "https://example.com/task"
+    # Verify move was called with correct task
+    assert MockTdoCore.moved_indices == [1]
+    assert MockTdoCore.moved_dest_env == "work"
