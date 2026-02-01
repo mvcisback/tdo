@@ -1075,45 +1075,75 @@ async def _handle_move(args: argparse.Namespace) -> None:
         await dest_client.close()
 
 
+def _format_sync_errors(errors: list) -> str:
+    """Format sync errors for display."""
+    lines = []
+    for error in errors:
+        index_str = f"[{error.task_index}] " if error.task_index is not None else ""
+        lines.append(f"  {index_str}{error.action}: {error.uid} - {error.error}")
+    return "\n".join(lines)
+
+
 async def _handle_pull(args: argparse.Namespace) -> None:
+    dry_run = getattr(args, "dry_run", False)
+
     async def _pull(client: "CalDAVClient") -> None:
-        result = await client.pull()
+        result = await client.pull(dry_run=dry_run)
+        prefix = "[DRY RUN] " if result.dry_run else ""
         if result.diff.is_empty:
-            print(f"pulled {result.fetched} tasks (no changes)")
+            print(f"{prefix}pulled {result.fetched} tasks (no changes)")
         else:
-            print(result.diff.pretty())
+            print(f"{prefix}{result.diff.pretty()}")
+        if result.has_errors:
+            print(f"\n{prefix}Errors ({len(result.errors)}):")
+            print(_format_sync_errors(result.errors))
 
     await _run_with_client(args.env, _pull)
 
 
 async def _handle_push(args: argparse.Namespace) -> None:
+    dry_run = getattr(args, "dry_run", False)
+
     async def _push(client: "CalDAVClient") -> None:
-        result = await client.push()
+        result = await client.push(dry_run=dry_run)
+        prefix = "[DRY RUN] " if result.dry_run else ""
         if result.diff.is_empty:
-            print("nothing to push")
+            print(f"{prefix}nothing to push")
         else:
-            print(result.diff.pretty())
+            print(f"{prefix}{result.diff.pretty()}")
+        if result.has_errors:
+            print(f"\n{prefix}Errors ({len(result.errors)}):")
+            print(_format_sync_errors(result.errors))
 
     await _run_with_client(args.env, _push)
 
 
 async def _handle_sync(args: argparse.Namespace) -> None:
+    dry_run = getattr(args, "dry_run", False)
+
     async def _sync(client: "CalDAVClient") -> None:
-        result = await client.sync()
+        result = await client.sync(dry_run=dry_run)
         pull_empty = result.pulled.diff.is_empty
         push_empty = result.pushed.diff.is_empty
+        prefix = "[DRY RUN] " if dry_run else ""
 
         if pull_empty and push_empty:
-            print("already in sync")
+            print(f"{prefix}already in sync")
         else:
             if not pull_empty:
-                print("Pulled:")
+                print(f"{prefix}Pulled:")
                 print(result.pulled.diff.pretty())
             if not push_empty:
                 if not pull_empty:
                     print()
-                print("Pushed:")
+                print(f"{prefix}Pushed:")
                 print(result.pushed.diff.pretty())
+
+        # Show any errors from pull or push
+        all_errors = result.pulled.errors + result.pushed.errors
+        if all_errors:
+            print(f"\n{prefix}Errors ({len(all_errors)}):")
+            print(_format_sync_errors(all_errors))
 
     await _run_with_client(args.env, _sync)
 
@@ -1312,12 +1342,30 @@ def _build_parser() -> argparse.ArgumentParser:
     waiting_parser.set_defaults(func=_handle_wait)
 
     pull_parser = subparsers.add_parser("pull")
+    pull_parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="show what would be pulled without modifying the cache",
+    )
     pull_parser.set_defaults(func=_handle_pull)
 
     push_parser = subparsers.add_parser("push")
+    push_parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="show what would be pushed without sending to the server",
+    )
     push_parser.set_defaults(func=_handle_push)
 
     sync_parser = subparsers.add_parser("sync")
+    sync_parser.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help="show what would be synced without making any changes",
+    )
     sync_parser.set_defaults(func=_handle_sync)
 
     show_parser = subparsers.add_parser("show")

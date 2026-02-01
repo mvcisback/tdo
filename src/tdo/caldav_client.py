@@ -30,18 +30,35 @@ def _debug_log(stage: str, duration: float, info: str | None = None) -> None:
 
 
 @dataclass
+class SyncError:
+    """Represents an error during sync for a specific task."""
+    uid: str
+    action: str
+    error: str
+    task_index: int | None = None
+
+
+@dataclass
 class PullResult:
     tasks: list[Task]
     diff: TaskSetDiff[int]
+    errors: list[SyncError] = field(default_factory=list)
+    dry_run: bool = False
 
     @property
     def fetched(self) -> int:
         return len(self.tasks)
 
+    @property
+    def has_errors(self) -> bool:
+        return len(self.errors) > 0
+
 
 @dataclass
 class PushResult:
     diff: TaskSetDiff[int]
+    errors: list[SyncError] = field(default_factory=list)
+    dry_run: bool = False
 
     @property
     def created(self) -> int:
@@ -54,6 +71,10 @@ class PushResult:
     @property
     def deleted(self) -> int:
         return self.diff.deleted_count
+
+    @property
+    def has_errors(self) -> bool:
+        return len(self.errors) > 0
 
 
 @dataclass
@@ -248,9 +269,10 @@ class CalDAVClient:
             task_index=task.task_index,
         )
 
-    async def pull(self) -> PullResult:
+    async def pull(self, *, dry_run: bool = False) -> PullResult:
         start = perf_counter()
         cache = self._ensure_cache()
+        errors: list[SyncError] = []
 
         # Get cached state before pull
         before = await cache.list_tasks()
@@ -259,7 +281,62 @@ class CalDAVClient:
         # Fetch remote tasks
         calendar = self._ensure_calendar()
         resources = calendar.todos()
-        remote_tasks = [self._task_from_resource(todo) for todo in resources]
+        remote_tasks: list[Task] = []
+        for todo in resources:
+            try:
+                task = self._task_from_resource(todo)
+                remote_tasks.append(task)
+            except Exception as e:
+                # Try to extract UID for error reporting
+                uid = "unknown"
+                try:
+                    if hasattr(todo, "id"):
+                        uid = str(todo.id)
+                    elif hasattr(todo, "url"):
+                        uid = str(todo.url)
+                except Exception:
+                    pass
+                error = SyncError(uid=uid, action="parse", error=str(e))
+                errors.append(error)
+                _debug_log("pull_error", 0.0, f"uid={uid} action=parse error={e}")
+
+        # In dry run mode, compute diff without modifying cache
+        if dry_run:
+            # Build hypothetical after state
+            remote_by_uid = {t.uid: t for t in remote_tasks}
+            after_by_uid = dict(remote_by_uid)
+
+            # Build diff keyed by task_index
+            diffs: dict[int, TaskDiff] = {}
+            all_uids = set(before_by_uid.keys()) | set(after_by_uid.keys())
+
+            # Use temporary indices for new tasks in dry run mode
+            temp_index = max((t.task_index or 0 for t in before), default=0) + 1
+
+            for uid in all_uids:
+                before_task = before_by_uid.get(uid)
+                after_task = after_by_uid.get(uid)
+
+                pre = before_task.data if before_task else None
+                post = after_task.data if after_task else None
+
+                if pre == post:
+                    continue
+
+                # Use before's index if available, otherwise assign temp index
+                if before_task is not None:
+                    key = before_task.task_index
+                else:
+                    key = temp_index
+                    temp_index += 1
+
+                diffs[key] = TaskDiff(pre=pre, post=post)
+
+            diff: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+            elapsed = perf_counter() - start
+            error_info = f" errors={len(errors)}" if errors else ""
+            _debug_log("pull", elapsed, f"count={len(remote_tasks)}{error_info} (dry run)")
+            return PullResult(tasks=list(before), diff=diff, errors=errors, dry_run=True)
 
         # Replace cache with remote tasks
         await cache.replace_remote_tasks(remote_tasks)
@@ -269,7 +346,7 @@ class CalDAVClient:
         after_by_uid = {t.uid: t for t in after}
 
         # Build diff keyed by task_index
-        diffs: dict[int, TaskDiff] = {}
+        diffs = {}
         all_uids = set(before_by_uid.keys()) | set(after_by_uid.keys())
 
         for uid in all_uids:
@@ -290,7 +367,7 @@ class CalDAVClient:
 
             diffs[key] = TaskDiff(pre=pre, post=post)
 
-        diff: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
+        diff = TaskSetDiff(diffs=diffs)
 
         # Log transaction if there are changes
         if not diff.is_empty:
@@ -305,59 +382,93 @@ class CalDAVClient:
             )
 
         elapsed = perf_counter() - start
-        _debug_log("pull", elapsed, f"count={len(remote_tasks)}")
-        return PullResult(tasks=after, diff=diff)
+        error_info = f" errors={len(errors)}" if errors else ""
+        _debug_log("pull", elapsed, f"count={len(remote_tasks)}{error_info}")
+        return PullResult(tasks=after, diff=diff, errors=errors, dry_run=False)
 
-    async def push(self) -> PushResult:
+    async def push(self, *, dry_run: bool = False) -> PushResult:
         start = perf_counter()
         cache = self._ensure_cache()
         pending = await cache.dirty_tasks()
         diffs: dict[int, TaskDiff] = {}
+        errors: list[SyncError] = []
+        successfully_deleted: list[str] = []
 
         if pending:
-            calendar = self._ensure_calendar()
+            calendar = self._ensure_calendar() if not dry_run else None
             for entry in pending:
                 task = entry.task
                 index = task.task_index
 
-                if entry.action == "create":
-                    synced = self._push_create(task, calendar)
-                    await cache.upsert_task(
-                        synced,
-                        last_synced=time.time(),
-                        clear_pending=True,
+                try:
+                    if entry.action == "create":
+                        if dry_run:
+                            diffs[index] = TaskDiff(pre=None, post=task.data)
+                        else:
+                            synced = self._push_create(task, calendar)
+                            # Handle creates from both tasks and completed_tasks
+                            if task.data.status == "COMPLETED":
+                                await cache._insert_completed_task(
+                                    synced,
+                                    pending_action=None,
+                                    last_synced=time.time(),
+                                    completed_at=time.time(),
+                                    task_index=task.task_index,
+                                )
+                            else:
+                                await cache.upsert_task(
+                                    synced,
+                                    last_synced=time.time(),
+                                    clear_pending=True,
+                                )
+                            diffs[index] = TaskDiff(pre=None, post=task.data)
+                    elif entry.action == "update":
+                        if dry_run:
+                            diffs[index] = TaskDiff(pre=TaskData(), post=task.data)
+                        else:
+                            synced = self._push_update(task, calendar)
+                            # Handle updates from both tasks and completed_tasks
+                            if task.data.status == "COMPLETED":
+                                await cache._insert_completed_task(
+                                    synced,
+                                    pending_action=None,
+                                    last_synced=time.time(),
+                                    completed_at=time.time(),
+                                    task_index=task.task_index,
+                                )
+                            else:
+                                await cache.upsert_task(
+                                    synced,
+                                    last_synced=time.time(),
+                                    clear_pending=True,
+                                )
+                            # Use empty TaskData as synthetic pre to trigger is_update
+                            diffs[index] = TaskDiff(pre=TaskData(), post=task.data)
+                    else:  # delete
+                        if dry_run:
+                            diffs[index] = TaskDiff(pre=task.data, post=None)
+                        else:
+                            self._push_delete(task, calendar)
+                            diffs[index] = TaskDiff(pre=task.data, post=None)
+                            successfully_deleted.append(task.uid)
+                except Exception as e:
+                    error = SyncError(
+                        uid=task.uid,
+                        action=entry.action,
+                        error=str(e),
+                        task_index=index,
                     )
-                    diffs[index] = TaskDiff(pre=None, post=task.data)
-                elif entry.action == "update":
-                    synced = self._push_update(task, calendar)
-                    # Handle updates from both tasks and completed_tasks
-                    if task.data.status == "COMPLETED":
-                        await cache._insert_completed_task(
-                            synced,
-                            pending_action=None,
-                            last_synced=time.time(),
-                            completed_at=time.time(),
-                            task_index=task.task_index,
-                        )
-                    else:
-                        await cache.upsert_task(
-                            synced,
-                            last_synced=time.time(),
-                            clear_pending=True,
-                        )
-                    # Use empty TaskData as synthetic pre to trigger is_update
-                    diffs[index] = TaskDiff(pre=TaskData(), post=task.data)
-                else:  # delete
-                    self._push_delete(task, calendar)
-                    diffs[index] = TaskDiff(pre=task.data, post=None)
+                    errors.append(error)
+                    _debug_log("push_error", 0.0, f"uid={task.uid} action={entry.action} error={e}")
 
-            # Flush all deleted tasks after successful push
-            await cache.flush_deleted_tasks()
+            # Flush only successfully deleted tasks after push
+            if not dry_run and successfully_deleted:
+                await cache.flush_deleted_tasks()
 
         diff: TaskSetDiff[int] = TaskSetDiff(diffs=diffs)
 
-        # Log transaction if there are changes
-        if not diff.is_empty:
+        # Log transaction if there are changes (skip for dry run)
+        if not diff.is_empty and not dry_run:
             # Build resolver from index to uid
             index_to_uid = {entry.task.task_index: entry.task.uid for entry in pending}
             uid_diff = diff.to_uid_keyed(lambda idx: index_to_uid.get(idx, str(idx)))
@@ -368,12 +479,14 @@ class CalDAVClient:
             )
 
         elapsed = perf_counter() - start
-        _debug_log("push", elapsed, f"pending={len(pending)}")
-        return PushResult(diff=diff)
+        mode = " (dry run)" if dry_run else ""
+        error_info = f" errors={len(errors)}" if errors else ""
+        _debug_log("push", elapsed, f"pending={len(pending)}{error_info}{mode}")
+        return PushResult(diff=diff, errors=errors, dry_run=dry_run)
 
-    async def sync(self) -> SyncResult:
-        pulled = await self.pull()
-        pushed = await self.push()
+    async def sync(self, *, dry_run: bool = False) -> SyncResult:
+        pulled = await self.pull(dry_run=dry_run)
+        pushed = await self.push(dry_run=dry_run)
         return SyncResult(pulled=pulled, pushed=pushed)
 
     def _ensure_calendar(self) -> "Calendar":
@@ -396,7 +509,11 @@ class CalDAVClient:
             task.data.attachments,
         )
         todo = calendar.add_todo(body)
-        return self._task_from_resource(todo)
+        synced = self._task_from_resource(todo)
+        # Ensure we keep the original UID (server might return different/empty UID)
+        synced.uid = task.uid
+        synced.task_index = task.task_index
+        return synced
 
     def _push_update(self, task: Task, calendar: "Calendar") -> Task:
         summary = task.data.summary or task.uid
@@ -416,12 +533,22 @@ class CalDAVClient:
         resource.id = task.uid
         resource.data = body
         resource.save()
-        return self._task_from_resource(resource)
+        synced = self._task_from_resource(resource)
+        # Ensure we keep the original UID and index (server might return different/empty UID)
+        synced.uid = task.uid
+        synced.task_index = task.task_index
+        return synced
 
     def _push_delete(self, task: Task, calendar: "Calendar") -> None:
-        todo = calendar.todo_by_uid(task.uid)
-        if todo:
-            todo.delete()
+        from caldav import error as caldav_error
+
+        try:
+            todo = calendar.todo_by_uid(task.uid)
+            if todo:
+                todo.delete()
+        except caldav_error.NotFoundError:
+            # Task already gone from server - that's the desired state
+            _debug_log("push_delete", 0.0, f"uid={task.uid} already deleted on server")
 
     def _resource_for_update(self, task: Task, calendar: "Calendar") -> "CalendarObjectResource":
         from caldav.objects import CalendarObjectResource
