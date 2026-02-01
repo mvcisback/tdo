@@ -1,3 +1,9 @@
+## 0.11.0 (2026-02-01)
+
+### Feat
+
+- **sync**: Add error resilience and dry-run support for push/pull
+
 ## 0.10.0 (2026-01-17)
 
 ### Feat
